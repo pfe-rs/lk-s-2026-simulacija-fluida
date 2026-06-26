@@ -1,165 +1,150 @@
-import pygame
 import numpy as np
-# Uvozimo tvoje funkcije iz projekta
-from essential_functions import IndexMap, Matrica_A, vectorB, IzracunajPritisak, Univerzalna_Advekcija, Univerzalna_Difuzija
+import matplotlib.pyplot as plt
+from essential_functions import Univerzalna_Advekcija, Univerzalna_Difuzija, IndexMap, vectorB, Matrica_A, IzracunajPritisak
+import matplotlib.animation as animation
+from scipy.sparse.linalg import cg
 
-# --- 1. FUNKCIJE ZA PAMETAN RAD SA SILAMA I BOJAMA ---
-
-def dodaj_impuls_sile(sila_x, sila_y, centar_i, centar_j, radijus, jacina_x, jacina_y):
-    """
-    Dodaje silu u obliku kruga oko pozicije miša na Staggered Grid.
-    """
-    N_redova_x, N_kolona_x = sila_x.shape
-    N_redova_y, N_kolona_y = sila_y.shape
-    
-    # Horizontalna sila (sila_x)
-    for i in range(N_redova_x):
-        for j in range(N_kolona_x):
-            if (i - centar_i)**2 + (j - centar_j)**2 < radijus**2:
-                sila_x[i, j] += jacina_x
-                
-    # Vertikalna sila (sila_y)
-    for i in range(N_redova_y):
-        for j in range(N_kolona_y):
-            if (i - centar_i)**2 + (j - centar_j)**2 < radijus**2:
-                sila_y[i, j] += jacina_y
-
-def odredi_boju(vrednost, max_vrednost=0.5):
-    """
-    Pretvara pritisak u RGB boju (Plava za nizak, Zelena za nulu, Crvena za visok).
-    Povećao sam max_vrednost na 0.5 jer miš pravi nagle skokove pritiska!
-    """
-    izbalansirano = np.clip(vrednost / max_vrednost, -1.0, 1.0)
-    
-    if izbalansirano < 0:
-        faktor = abs(izbalansirano)  
-        r = 0
-        g = int(255 * (1.0 - faktor))
-        b = int(255 * faktor)
-    else:
-        faktor = izbalansirano   
-        r = int(255 * faktor)
-        g = int(255 * (1.0 - faktor))
-        b = 0
-        
-    return (r, g, b)
-
-# --- 2. KONSTANTE I SIMULACIONE MATRICE ---
+# ==========================================================
+# GLAVNA INICIJALIZACIJA SIMULACIJE (32x32)
+# ==========================================================
 N = 32
-dt = 0.05
+dt = 0.01 
 h = 0.1
+ni = 0.1    
 rho = 1.0
-ni = 0.1 # Koeficijent viskoznosti
 
-# Inicijalizacija brzina i sila
-brzina_x = np.zeros((N, N + 1))
-brzina_y = np.zeros((N + 1, N))
-sila_x = np.zeros((N, N + 1))
-sila_y = np.zeros((N + 1, N))
+# 1. Kreiranje mrežice (1=FLUID, 0=SOLID okviri na ivicama)
+tip_celije = np.ones((N, N), dtype=int)
+tip_celije[0, :] = 0   
+tip_celije[-1, :] = 0  
+tip_celije[:, 0] = 0   
+tip_celije[:, -1] = 0  
 
-# Kreiramo tip ćelije (Zidovi na ivicama, unutra fluid)
-tip_celije = np.ones((N, N))
-tip_celije[0, :] = 0   # Gornji zid
-tip_celije[-1, :] = 0  # Donji zid
-tip_celije[:, 0] = 0   # Levi zid
-tip_celije[:, -1] = 0  # Desni zid
-
-# Unapred računamo mapu indeksa i statičku matricu sistema A
+# 2. Priprema matrice sistema
 mapa_indexa = IndexMap(tip_celije)
-A_sistem = Matrica_A(tip_celije)
+A_sistem = Matrica_A(tip_celije) 
 
-# --- 3. PYGAME INICIJALIZACIJA ---
-pygame.init()
-REZOLUCIJA = 512
-prozor = pygame.display.set_mode((REZOLUCIJA, REZOLUCIJA))
-pygame.display.set_caption("Interaktivna Fluid Simulacija (PyGame)")
-sat = pygame.time.Clock() # Za kontrolu FPS-a
+# 3. Inicijalizacija Staggered Grid brzina
+brzina_x = np.zeros((N, N+1))
+brzina_y = np.zeros((N+1, N))
 
-skala = REZOLUCIJA // N
+# Početni mehur brzine
+centar_i, centar_j = N // 2, N // 4
+radijus = 5
 
-# Glavna petlja aplikacije
-running = True
-while running:
-    # Resetujemo akumulirane eksterne sile na nulu za ovaj frejm
-    sila_x[:, :] = 0.0
-    sila_y[:, :] = 0.0
+for i in range(brzina_x.shape[0]):
+    for j in range(brzina_x.shape[1]):
+        if (i - centar_i)**2 + (j - centar_j)**2 < radijus**2:
+            brzina_x[i, j] = 10.0
 
-    # 1. Provera sistemskih događaja
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            running = False
+for i in range(brzina_y.shape[0]):
+    for j in range(brzina_y.shape[1]):
+        if (i - centar_i)**2 + (j - centar_j)**2 < radijus**2:
+            brzina_y[i, j] = 10.0
 
-    # 2. INTERAKTIVNO GURANJE MIŠEM
-    mis_pritisnut = pygame.mouse.get_pressed()
-    if mis_pritisnut[0]:  # Levi klik drži guranje
-        pos_x, pos_y = pygame.mouse.get_pos()
-        
-        # Preslikavanje piksela u indekse matrice (0 do N-1)
-        mis_j = pos_x // skala
-        mis_i = pos_y // skala
-        
-        # Uzimamo brzinu pomeranja miša
-        brzina_misa_x, brzina_misa_y = pygame.mouse.get_rel()
-        
-        # Dodajemo impuls u fluid (pomnoženo sa 20.0 da osetiš otpor)
-        if 0 < mis_i < N-1 and 0 < mis_j < N-1:
-            dodaj_impuls_sile(sila_x, sila_y, 
-                              centar_i=mis_i, centar_j=mis_j, radijus=2, 
-                              jacina_x=brzina_misa_x * 20.0, 
-                              jacina_y=brzina_misa_y * 20.0)
-    else:
-        # Re-inicijalizacija relativnog pomaka miša kada klik nije pritisnut,
-        # da ne bi dobili ogroman skok pri sledećem kliku
-        pygame.mouse.get_rel()
+# Koordinate za Quiver
+X, Y = np.meshgrid(np.arange(N), np.arange(N))
 
-    # --- 3. FIZIČKI PALEONTOLOŠKI PIPELINE ---
+fig, ax = plt.subplots(figsize=(8, 8))
+
+P_prikaz = np.zeros((N, N))
+im = ax.imshow(P_prikaz, cmap='jet', origin='upper', extent=[-0.5, N-0.5, N-0.5, -0.5], vmin=-5.0, vmax=5.0)
+kviver = ax.quiver(X, Y, np.zeros((N, N)), np.zeros((N, N)), color='white', scale=100, width=0.003)
+
+ax.set_xlim(-0.5, N-0.5)
+ax.set_ylim(N-0.5, -0.5)
+title = ax.set_title("Fluid Simulacija | Pritisak i Brzina | Frejm 0")
+fig.colorbar(im, ax=ax, label="Pritisak (P)")
+
+# ==========================================================
+# GLAVNA PETLJA ANIMACIJE
+# ==========================================================
+def update(frejm):
+    global brzina_x, brzina_y
     
-    # Korak 0: Primena eksternih sila na trenutno polje brzina
-    brzina_x += sila_x * dt
-    brzina_y += sila_y * dt
-    
-    # Korak 1 & 2: Rešavanje pritiska (Projektovanje)
+    # KORAK 1: Vektor B preko tvoje funkcije
     b_vektor = vectorB(tip_celije, brzina_x, brzina_y, rho, dt, h)
-    P_matrica = IzracunajPritisak(A_sistem, b_vektor, mapa_indexa, tip_celije, tol=1e-4)
+    
+    # KORAK 2: Poziv TVOJE funkcije za računanje 2D matrice pritiska
+    P_matrica = IzracunajPritisak(A_sistem, b_vektor, mapa_indexa, tip_celije, tol=1e-5)
+                
+    # KORAK 3: Korekcija brzina (Pressure Projection)
+    # U update(frejm) funkciji promeni minuse u pluseve:
 
-    # Korak 3: Korekcija brzina pomoću dobijenog pritiska + očuvanje tvrdih zidova
+    # KORAK 3: Korekcija brzina (Zamenjeni minusi u pluseve zbog usaglašavanja znaka pritiska)
+    # KORAK 3: Korekcija brzina (Vraćamo minuse jer smo sredili znak u vectorB)
+    # KORAK 3: Korekcija brzina (Pressure Projection)
     for i in range(N):
-        for j in range(1, N):
+        for j in range(1, N): # brzina_x je velicine (N, N+1)
+            # Brzina se menja samo ako su obe susedne celije koje dele ivicu fluid
             if tip_celije[i, j] != 0 and tip_celije[i, j-1] != 0:
                 brzina_x[i, j] = brzina_x[i, j] - (dt / (rho * h)) * (P_matrica[i, j] - P_matrica[i, j-1])
             else:
-                brzina_x[i, j] = 0.0
+                brzina_x[i, j] = 0.0 # ODRŽAVAMO ZID TVRDIM
             
-    for i in range(1, N):
+    for i in range(1, N): # brzina_y je velicine (N+1, N)
         for j in range(N):
             if tip_celije[i, j] != 0 and tip_celije[i-1, j] != 0:
                 brzina_y[i, j] = brzina_y[i, j] - (dt / (rho * h)) * (P_matrica[i, j] - P_matrica[i-1, j])
             else:
                 brzina_y[i, j] = 0.0
-
-    # Korak 4: Advekcija (Premeštanje fluida niz sopstvenu brzinu)
-    brzina_x = Univerzalna_Advekcija(brzina_x, brzina_x, brzina_y, 'x_ivica', dt, h)
-    brzina_y = Univerzalna_Advekcija(brzina_y, brzina_x, brzina_y, 'y_ivica', dt, h)
-
-    # Korak 5: Difuzija (Viskoznost) + Damping (Prigušenje) za stabilizaciju
-    brzina_x = Univerzalna_Difuzija(brzina_x, ni, dt, h) * 0.995
-    brzina_y = Univerzalna_Difuzija(brzina_y, ni, dt, h) * 0.995
-
-    # --- 4. RENDER ELEMENTA NA EKRAN ---
-    prozor.fill((0, 0, 0)) # Čistimo ekran
+    # KORAK 4: Advekcija
+    bx_advektovano = Univerzalna_Advekcija(brzina_x, brzina_x, brzina_y, 'x_ivica', dt, h)
+    by_advektovano = Univerzalna_Advekcija(brzina_y, brzina_x, brzina_y, 'y_ivica', dt, h)
     
-    for i in range(N):
-        for j in range(N):
-            if tip_celije[i, j] == 0:
-                # Elegantna tamna boja za zidove kutije
-                boja = (15, 23, 42)
-            else:
-                # Renderujemo pritisak u plavo-beloj skali
-                boja = odredi_boju(P_matrica[i, j], max_vrednost=0.15) # Blago spušten max za bolji kontrast
-                
-            pygame.draw.rect(prozor, boja, (j * skala, i * skala, skala, skala))
+    # KORAK 5: Difuzija
+    brzina_x = Univerzalna_Difuzija(bx_advektovano, ni, dt, h)
+    brzina_y = Univerzalna_Difuzija(by_advektovano, ni, dt, h)
+    
 
-    pygame.display.flip()
-    sat.tick(60)
 
-pygame.quit()
+    #METRIKE SE OVDE OBRADJUJU!!!
+
+    #---------DIVERGENCIJA------------
+
+    div = 0
+    for i in range(1, N-1):
+        for j in range(1, N-1):
+            
+            d = (brzina_x[i, j+1] - brzina_x[i, j]) + (brzina_y[i+1, j] - brzina_y[i, j])
+    
+            div += abs(d)
+
+    #---------VORTLOCITET-------------
+
+    ukupni_vorticitet = 0.0
+    for i in range(N-1):
+        for j in range(N-1):
+            rotacija = ((brzina_y[i, j+1] - brzina_y[i, j]) / h) - ((brzina_x[i+1, j] - brzina_x[i, j]) / h)
+            ukupni_vorticitet += abs(rotacija)
+
+    print(f"--- DIVERGENCIJA --- | --- VORTICITET ---")
+    print(f"{div:.3f}        |      {ukupni_vorticitet:.3f}")
+
+
+    # Srednje brzine za strelice
+    U_centar = (brzina_x[:, :-1] + brzina_x[:, 1:]) / 2.0
+    V_centar = (brzina_y[:-1, :] + brzina_y[1:, :]) / 2.0
+    
+
+    # Osvežavanje ekrana
+    im.set_array(P_matrica)
+
+    kviver.set_UVC(U_centar, -V_centar)
+    title.set_text(f"Fluid Simulacija | Pritisak i Brzina | Frejm {frejm}")
+    
+    return im, kviver, title
+
+ani = animation.FuncAnimation(fig, update, frames=100, interval=9, blit=False, repeat=False)
+plt.show()
+"""
+# --- ČUVANJE U GIF ---
+print("Učitavam frejmove i pravim GIF... (ovo može potrajati malo)")
+ 
+# Kreiramo writer objekat (fps=30 znači 30 frejmova u sekundi)
+writer = animation.PillowWriter(fps=30)
+
+# Čuvamo animaciju pod imenom 'simulacija_fluida.gif'
+ani.save('simulacija_fluida_120fps_kratka.gif', writer=writer)
+
+print("GIF uspešno sačuvan kao 'simulacija_fluida.gif'!")"""
