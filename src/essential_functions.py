@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.sparse.linalg import cg
 
 def Univerzalna_Advekcija(polje, brzina_x, brzina_y, tip_pozicije, dt=0.05, h=0.1):
     novo_polje = np.zeros_like(polje)
@@ -162,6 +163,23 @@ def vectorB(tip_celije, brzina_x, brzina_y, rho, dt):
 
                 divegencija = (u_desno - u_levo) + (v_dole - v_gore)
 
-                b[int(mapa_indexa[i,j])] = (rho / dt) * divegencija
+                b[int(mapa_indexa[i,j])] = -(rho / dt) * divegencija
 
     return b
+
+def IzracunajPritisak(matrica_a, b_vektor, mapa_indexa, tip_celije, tol = 1e-5):
+    
+    P_vektor, _ = cg(matrica_a, b_vektor, rtol=tol)
+
+    P_matrica = np.zeros(tip_celije.shape)
+
+    broj_redova, broj_kolona = mapa_indexa.shape
+
+    for i in range(broj_redova):
+        for j in range(broj_kolona):
+            idx = mapa_indexa[i, j]
+            
+            if idx != -1:
+                P_matrica[i, j] = P_vektor[int(idx)]
+                
+    return P_matrica
