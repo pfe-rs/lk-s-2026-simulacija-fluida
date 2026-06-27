@@ -1,6 +1,7 @@
 import numpy as np
 from time import perf_counter
 from scipy.sparse import lil_matrix
+import metrics
 
 from essential_functions import (
     IndexMap,

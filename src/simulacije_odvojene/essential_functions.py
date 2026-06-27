@@ -161,16 +161,6 @@ def vectorB(tip_celije, brzina_x, brzina_y, rho, dt, h):
                 b[int(mapa_indexa[i,j])] = (rho * h / dt) * divegencija
     return b
 
-def izracunaj_divergenciju(brzina_x, brzina_y):
-    
-    du_dx = brzina_x[:, 1:] - brzina_x[:, :-1]
-    
-    dv_dy = brzina_y[1:, :] - brzina_y[:-1, :]
-    
-    
-    div = np.sum(np.abs(du_dx + dv_dy))
-    return div
-
 def IzracunajPritisak(matrica_a, b_vektor, mapa_indexa, tip_celije, tol = 1e-5):
     
     P_vektor, _ = cg(matrica_a, b_vektor, rtol=tol)
@@ -187,6 +177,21 @@ def IzracunajPritisak(matrica_a, b_vektor, mapa_indexa, tip_celije, tol = 1e-5):
                 P_matrica[i, j] = P_vektor[int(idx)]
                 
     return P_matrica
+
+def izracunaj_divergenciju(brzina_x, brzina_y):
+    
+    N = len(brzina_y)
+
+    div = 0
+    for i in range(1, N-1):
+        for j in range(1, N-1):
+            
+            d = (brzina_x[i, j+1] - brzina_x[i, j]) + (brzina_y[i+1, j] - brzina_y[i, j])
+    
+            div += abs(d)
+    
+    return div
+
 
 def add_vortex(brzina_x, brzina_y, cx, cy, radius, strength, h):
 
