@@ -3,6 +3,14 @@ import matplotlib.pyplot as plt
 from essential_functions import Univerzalna_Advekcija, Univerzalna_Difuzija, IndexMap, vectorB, Matrica_A, IzracunajPritisak
 import matplotlib.animation as animation
 from scipy.sparse.linalg import cg
+import csv
+
+csv_fajl =  "metrike_na_brzaka.csv"
+with open(csv_fajl, mode='w', newline='') as f:
+    
+    pisac = csv.writer(f)
+    
+    pisac.writerow(["Divergencija", "Vorticitet"])
 
 # ==========================================================
 # GLAVNA INICIJALIZACIJA SIMULACIJE (32x32)
@@ -92,6 +100,9 @@ def update(frejm):
     bx_advektovano = Univerzalna_Advekcija(brzina_x, brzina_x, brzina_y, 'x_ivica', dt, h)
     by_advektovano = Univerzalna_Advekcija(brzina_y, brzina_x, brzina_y, 'y_ivica', dt, h)
     
+
+    
+
     # KORAK 5: Difuzija
     brzina_x = Univerzalna_Difuzija(bx_advektovano, ni, dt, h)
     brzina_y = Univerzalna_Difuzija(by_advektovano, ni, dt, h)
@@ -110,7 +121,7 @@ def update(frejm):
     
             div += abs(d)
 
-    #---------VORTLOCITET-------------
+    #---------VORTICITET-------------
 
     ukupni_vorticitet = 0.0
     for i in range(N-1):
@@ -118,9 +129,25 @@ def update(frejm):
             rotacija = ((brzina_y[i, j+1] - brzina_y[i, j]) / h) - ((brzina_x[i+1, j] - brzina_x[i, j]) / h)
             ukupni_vorticitet += abs(rotacija)
 
-    print(f"--- DIVERGENCIJA --- | --- VORTICITET ---")
-    print(f"{div:.3f}        |      {ukupni_vorticitet:.3f}")
 
+    #--------------CFL----------------
+
+    u_max = np.max(brzina_x)
+    v_max = np.max(brzina_y)
+
+    c_fl = (max(u_max, v_max) * dt) / h
+
+    #-------KINETIČKA ENERGIJA--------------
+
+    kineticka_energija = 0.5 * rho * (np.sum(brzina_x ** 2) + np.sum(brzina_y ** 2))
+
+    print(f"--- DIVERGENCIJA --- | --- VORTICITET --- | --- CFL --- | --- KINETIČKA ENERGIJA --- ")
+    print(f"{div:.3f}        |      {ukupni_vorticitet:.3f}    |   {c_fl:.3f}    -   {kineticka_energija:.3f}")
+
+
+    with open(csv_fajl, mode='a', newline='') as f:
+        pisac = csv.writer(f)
+        pisac.writerow([f"{div:.6f}    " , f"     {ukupni_vorticitet:.6f},   ", f"   {c_fl:.6f}    ", f"    {kineticka_energija:.6f}   "])
 
     # Srednje brzine za strelice
     U_centar = (brzina_x[:, :-1] + brzina_x[:, 1:]) / 2.0

@@ -177,3 +177,17 @@ def IzracunajPritisak(matrica_a, b_vektor, mapa_indexa, tip_celije, tol = 1e-5):
                 P_matrica[i, j] = P_vektor[int(idx)]
                 
     return P_matrica
+
+def izracunaj_divergenciju(brzina_x, brzina_y):
+    
+    N = len(brzina_y)
+
+    div = 0
+    for i in range(1, N-1):
+        for j in range(1, N-1):
+            
+            d = (brzina_x[i, j+1] - brzina_x[i, j]) + (brzina_y[i+1, j] - brzina_y[i, j])
+    
+            div += abs(d)
+    
+    return div
