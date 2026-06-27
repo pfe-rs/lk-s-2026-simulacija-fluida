@@ -1,4 +1,6 @@
 *.npz
 _*
-*.gif
 *.csv
+*.gif
+notebooks
+src/simulacije_odvojene

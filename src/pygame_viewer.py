@@ -2,6 +2,7 @@ import argparse
 import time
 
 import numpy as np
+import cupy as cp
 import pygame
 
 from realtime_simulation import FluidSimulation, PRESETS
@@ -9,7 +10,7 @@ from realtime_simulation import FluidSimulation, PRESETS
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Fast Pygame viewer for the fluid simulation.")
-    parser.add_argument("--n", type=int, default=60, help="Grid size.")
+    parser.add_argument("--n", type=int, default=32, help="Grid size.")
     parser.add_argument("--dt", type=float, default=0.01, help="Simulation time step.")
     parser.add_argument("--h", type=float, default=0.1, help="Cell size.")
     parser.add_argument("--viscosity", type=float, default=0.08, help="Fluid viscosity.")
@@ -28,7 +29,7 @@ def parse_args():
         help="Draw every Nth velocity arrow.",
     )
     parser.add_argument("--no-quiver", action="store_true", help="Hide velocity arrows.")
-    parser.add_argument("--max-fps", type=int, default=0, help="0 means uncapped.")
+    parser.add_argument("--max-fps", type=int, default=60, help="0 means uncapped.")
     parser.add_argument("--frames", type=int, default=0, help="Quit after N frames. 0 means run forever.")
     parser.add_argument(
         "--stream-strength",
@@ -48,32 +49,59 @@ def parse_args():
         default=5.0,
         help="Pressure magnitude mapped to full color intensity.",
     )
+    parser.add_argument(
+        "--view-mode",
+        default="pressure",
+        choices=["pressure", "curl", "speed"],
+        help="biras polje",
+    )
+    parser.add_argument(
+        "--curl-scale",
+        type=float,
+        default=20.0,  
+        help="Rotor",
+)   
+    
+    parser.add_argument(
+        "--speed-scale",
+        type=float,
+        default=20.0,  
+        help="Brzina brm brm",
+)
+
     return parser.parse_args()
 
 
 def pressure_to_rgb(pressure, pressure_scale):
-    normalized = np.clip(pressure / pressure_scale, -1.0, 1.0)
-    positive = np.clip(normalized, 0.0, 1.0)
-    negative = np.clip(-normalized, 0.0, 1.0)
+    normalized = cp.clip(pressure / pressure_scale, -1.0, 1.0)
+    positive = cp.clip(normalized, 0.0, 1.0)
+    negative = cp.clip(-normalized, 0.0, 1.0)
 
-    rgb = np.empty((*pressure.shape, 3), dtype=np.uint8)
-    rgb[..., 0] = (35 + 220 * positive).astype(np.uint8)
-    rgb[..., 1] = (45 + 150 * (1.0 - np.abs(normalized))).astype(np.uint8)
-    rgb[..., 2] = (55 + 200 * negative).astype(np.uint8)
+    rgb = cp.empty((*pressure.shape, 3), dtype=cp.uint8)
+    rgb[..., 0] = (35 + 220 * positive).astype(cp.uint8)
+    rgb[..., 1] = (45 + 150 * (1.0 - cp.abs(normalized))).astype(cp.uint8)
+    rgb[..., 2] = (55 + 200 * negative).astype(cp.uint8)
     return rgb
 
 
 def draw_velocity_arrows(surface, simulation, viewport_size, stride):
     u_center, v_center = simulation.centered_velocity()
+    
+    u_cpu = u_center.get()
+    v_cpu = v_center.get()
+
+
     cell_size = viewport_size / simulation.n
     scale = cell_size * 0.13
+
+
 
     for i in range(1, simulation.n - 1, stride):
         y = (i + 0.5) * cell_size
         for j in range(1, simulation.n - 1, stride):
             x = (j + 0.5) * cell_size
-            dx = float(u_center[i, j]) * scale
-            dy = float(v_center[i, j]) * scale
+            dx = float(u_cpu[i, j]) * scale
+            dy = float(v_cpu[i, j]) * scale
             end = (x + dx, y + dy)
             pygame.draw.line(surface, (240, 245, 255), (x, y), end, 1)
             pygame.draw.circle(surface, (240, 245, 255), (int(end[0]), int(end[1])), 2)
@@ -111,6 +139,7 @@ def main():
 
     paused = False
     running = True
+    view_mode = args.view_mode
     fps = 0.0
     timings = {
         "events_ms": 0.0,
@@ -132,9 +161,6 @@ def main():
         "diffusion_ms": 0.0,
         "walls_ms": 0.0,
         "total_ms": 0.0,
-        "divergence_ms": 0.0, ##KAKO DA DODAM SVOJ KOD ZA RACUNANJE OVOGA
-        "kinetic_energy_ms": 0.0,
-        "cfl_ms":0.0
     }
 
     while running:
@@ -178,12 +204,21 @@ def main():
             last_step_timings = simulation.step(args.substeps, profile=True)
             timings["sim_total_ms"] = last_step_timings["total_ms"]
 
+            divergencija_metrika, vorticitet_metrika, curl, kinetic_energy, cfl = simulation.metrics()
+
         rgb_start = time.perf_counter()
-        rgb = pressure_to_rgb(simulation.pressure, args.pressure_scale)
+        if view_mode == "curl":
+            rgb = simulation.curl_to_rgb(simulation.curl_field(), args.curl_scale)
+        elif view_mode == "speed":
+            rgb = simulation.speed_to_rgb(simulation.speed(), args.speed_scale)
+        else:
+            rgb = pressure_to_rgb(simulation.pressure, args.pressure_scale)
+        timings["rgb_ms"] = (time.perf_counter() - rgb_start) * 1000.0
         timings["rgb_ms"] = (time.perf_counter() - rgb_start) * 1000.0
 
         scale_start = time.perf_counter()
-        field_surface = pygame.surfarray.make_surface(np.swapaxes(rgb, 0, 1))
+        cpu_rgb = cp.swapaxes(rgb, 0, 1).get() # Spuštamo sa GPU na CPU
+        field_surface = pygame.surfarray.make_surface(cpu_rgb)
         field_surface = pygame.transform.scale(field_surface, (args.size, args.size))
         screen.blit(field_surface, (0, 0))
         timings["scale_ms"] = (time.perf_counter() - scale_start) * 1000.0
@@ -215,6 +250,14 @@ def main():
             f"diffuse    {last_step_timings['diffusion_ms']:6.2f}",
             f"walls      {last_step_timings['walls_ms']:6.2f}",
             f"sim total  {timings['sim_total_ms']:6.2f}",
+
+            f"BENCHMARK METRIKE",
+            f"div metrika {divergencija_metrika:.2f}",
+            f"vorticitet metrika {vorticitet_metrika:.2f}",
+            f"curl metrika {curl:.2f}",
+            f"kinetic energy {kinetic_energy:.2f}",
+            f"cfl {cfl:.2f}",
+
             "render timing (ms)",
             f"events     {timings['events_ms']:6.2f}",
             f"stream     {timings['stream_ms']:6.2f}",
@@ -223,7 +266,7 @@ def main():
             f"quiver     {timings['quiver_ms']:6.2f}",
             f"text       {timings['text_ms']:6.2f}",
             f"flip       {timings['flip_ms']:6.2f}",
-            f"frame      {timings['frame_ms']:6.2f}",
+            f"frame      {timings['frame_ms']:6.2f}"      
         ]
         draw_text_lines(screen, font, lines, 10, 10)
         help_lines = ["space pause | r reset | 1-6 presets | hold L/R stream | esc quit"]

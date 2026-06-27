@@ -1,17 +1,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from essential_functions import Univerzalna_Advekcija, Univerzalna_Difuzija, IndexMap, vectorB, Matrica_A, IzracunajPritisak
+from essential_functions import *
 import matplotlib.animation as animation
 from scipy.sparse.linalg import cg
-import csv
-import metrics
-
-csv_fajl =  "metrike_na_brzaka.csv"
-with open(csv_fajl, mode='w', newline='') as f:
-    
-    pisac = csv.writer(f)
-    
-    pisac.writerow(["Divergencija""       ""Vorticitet""           ""CFL""         ""Kinetička energija""  ""ROTOR (CURL)"])
 
 # ==========================================================
 # GLAVNA INICIJALIZACIJA SIMULACIJE (32x32)
@@ -37,19 +28,19 @@ A_sistem = Matrica_A(tip_celije)
 brzina_x = np.zeros((N, N+1))
 brzina_y = np.zeros((N+1, N))
 
-# Početni mehur brzine
-centar_i, centar_j = N // 2, N // 4
-radijus = 5
+# Choose one preset
 
-for i in range(brzina_x.shape[0]):
-    for j in range(brzina_x.shape[1]):
-        if (i - centar_i)**2 + (j - centar_j)**2 < radijus**2:
-            brzina_x[i, j] = 10.0
+# initialize_blob(brzina_x, brzina_y, N)
 
-for i in range(brzina_y.shape[0]):
-    for j in range(brzina_y.shape[1]):
-        if (i - centar_i)**2 + (j - centar_j)**2 < radijus**2:
-            brzina_y[i, j] = 10.0
+# initialize_single_vortex(brzina_x, brzina_y, N, h)
+
+# initialize_double_vortex(brzina_x, brzina_y, N, h)
+
+# initialize_four_vortices(brzina_x, brzina_y, N, h)
+
+initialize_shear_layer(brzina_x, brzina_y, 8, N)
+
+# initialize_taylor_green(brzina_x, brzina_y, N, h)
 
 # Koordinate za Quiver
 X, Y = np.meshgrid(np.arange(N), np.arange(N))
@@ -57,6 +48,7 @@ X, Y = np.meshgrid(np.arange(N), np.arange(N))
 fig, ax = plt.subplots(figsize=(8, 8))
 
 P_prikaz = np.zeros((N, N))
+im = ax.imshow(P_prikaz, cmap='jet', origin='upper', extent=[-0.5, N-0.5, N-0.5, -0.5], vmin=-5.0, vmax=5.0)
 im = ax.imshow(P_prikaz, cmap='jet', origin='upper', extent=[-0.5, N-0.5, N-0.5, -0.5], vmin=-5.0, vmax=5.0)
 kviver = ax.quiver(X, Y, np.zeros((N, N)), np.zeros((N, N)), color='white', scale=100, width=0.003)
 
@@ -70,7 +62,7 @@ fig.colorbar(im, ax=ax, label="Pritisak (P)")
 # ==========================================================
 def update(frejm):
     global brzina_x, brzina_y
-    
+
     # KORAK 1: Vektor B preko tvoje funkcije
     b_vektor = vectorB(tip_celije, brzina_x, brzina_y, rho, dt, h)
     
@@ -101,9 +93,6 @@ def update(frejm):
     bx_advektovano = Univerzalna_Advekcija(brzina_x, brzina_x, brzina_y, 'x_ivica', dt, h)
     by_advektovano = Univerzalna_Advekcija(brzina_y, brzina_x, brzina_y, 'y_ivica', dt, h)
     
-
-    
-
     # KORAK 5: Difuzija
     brzina_x = Univerzalna_Difuzija(bx_advektovano, ni, dt, h)
     brzina_y = Univerzalna_Difuzija(by_advektovano, ni, dt, h)
@@ -114,28 +103,25 @@ def update(frejm):
 
     #---------DIVERGENCIJA------------
 
-    div = metrics.DivergenceMetric(brzina_x, brzina_y)
+    div = 0
+    for i in range(1, N-1):
+        for j in range(1, N-1):
+            
+            d = (brzina_x[i, j+1] - brzina_x[i, j]) + (brzina_y[i+1, j] - brzina_y[i, j])
+    
+            div += abs(d)
 
-    #---------VORTICITET-------------
+    #---------VORTLOCITET-------------
 
-    ukupni_vorticitet, curl = metrics.Vorticity(brzina_x, brzina_y)
+    ukupni_vorticitet = 0.0
+    for i in range(N-1):
+        for j in range(N-1):
+            rotacija = ((brzina_y[i, j+1] - brzina_y[i, j]) / h) - ((brzina_x[i+1, j] - brzina_x[i, j]) / h)
+            ukupni_vorticitet += abs(rotacija)
 
+    print(f"--- DIVERGENCIJA --- | --- VORTICITET ---")
+    print(f"{div:.3f}        |      {ukupni_vorticitet:.3f}")
 
-    #--------------CFL----------------
-
-    c_fl = metrics.CourantFriedrichLewy(brzina_x, brzina_y, dt, h)
-
-    #-------KINETIČKA ENERGIJA--------------
-
-    kineticka_energija= metrics.KineticEnergy(brzina_x, brzina_y, rho)
-
-    print(f"--- DIVERGENCIJA --- | --- VORTICITET --- | --- CFL --- | --- KINETIČKA ENERGIJA --- | --- CURL ---")
-    print(f"{div:.3f}               |      {ukupni_vorticitet:.3f}       |    {c_fl:.3f}    |           {kineticka_energija:.3f}         |    {curl:.3f}")
-
-
-    with open(csv_fajl, mode='a', newline='') as f:
-        pisac = csv.writer(f)
-        pisac.writerow([f"{div:.6f}    " , f"     {ukupni_vorticitet:.6f},   ", f"   {c_fl:.6f}    ", f"    {kineticka_energija:.6f}   ", f"{curl:.6f}"])
 
     # Srednje brzine za strelice
     U_centar = (brzina_x[:, :-1] + brzina_x[:, 1:]) / 2.0
@@ -150,9 +136,9 @@ def update(frejm):
     
     return im, kviver, title
 
-ani = animation.FuncAnimation(fig, update, frames=100, interval=9, blit=False, repeat=False)
-plt.show()
-"""
+ani = animation.FuncAnimation(fig, update, frames=100, interval=5, blit=False, repeat=False)
+##plt.show()
+
 # --- ČUVANJE U GIF ---
 print("Učitavam frejmove i pravim GIF... (ovo može potrajati malo)")
  

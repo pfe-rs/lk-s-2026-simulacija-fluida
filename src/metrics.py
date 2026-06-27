@@ -1,9 +1,9 @@
 import numpy as np
-
+import cupy as cp
 def CourantFriedrichLewy(brzina_x, brzina_y, dt, h):
     
-    u_max = np.max(np.abs(brzina_x))
-    v_max = np.max(np.abs(brzina_y))
+    u_max = float(cp.max(cp.abs(brzina_x)))
+    v_max = float(cp.max(cp.abs(brzina_y)))
 
     c_fl = (max(u_max, v_max) * dt) / h
     return c_fl
@@ -15,8 +15,8 @@ def DivergenceMetric(brzina_x, brzina_y):
     dv_dy = brzina_y[1:, :] - brzina_y[:-1, :]
     
     
-    div = np.sum(np.abs(du_dx + dv_dy))
-    return div
+    div = cp.sum(cp.abs(du_dx + dv_dy))
+    return float(div)
 
 def Vorticity(brzina_x, brzina_y, h=1.0):
 
@@ -41,12 +41,12 @@ def Vorticity(brzina_x, brzina_y, h=1.0):
     
     rotacija = dv_dx_cropped - du_dy_cropped
     
-    ukupni_vorticitet = np.sum(np.abs(rotacija))
-    max_curl = np.max(np.abs(rotacija))
+    ukupni_vorticitet = cp.sum(cp.abs(rotacija))
+    max_curl = cp.max(cp.abs(rotacija))
     
     return ukupni_vorticitet, max_curl
 
 def KineticEnergy(brzina_x, brzina_y, rho):
     
-    kineticka_energija = 0.5 * rho * (np.sum(brzina_x ** 2) + np.sum(brzina_y ** 2))
-    return kineticka_energija
+    kineticka_energija = 0.5 * rho * (cp.sum(brzina_x ** 2) + cp.sum(brzina_y ** 2))
+    return float(kineticka_energija)
