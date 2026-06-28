@@ -16,7 +16,7 @@ def DivergenceMetric(brzina_x, brzina_y):
     
     
     div = cp.sum(cp.abs(du_dx + dv_dy))
-    return float(div)
+    return float(div)   
 
 def Vorticity(brzina_x, brzina_y, h=1.0):
 
@@ -50,3 +50,33 @@ def KineticEnergy(brzina_x, brzina_y, rho):
     
     kineticka_energija = 0.5 * rho * (cp.sum(brzina_x ** 2) + cp.sum(brzina_y ** 2))
     return float(kineticka_energija)
+
+def L2NormAcc(brzina_x, brzina_y):
+    
+    du_dx = brzina_x[:, 1:] - brzina_x[:, :-1]
+    dv_dy = brzina_y[1:, :] - brzina_y[:-1, :]
+    divergence_field = du_dx + dv_dy
+
+    error = cp.sqrt(cp.mean(divergence_field ** 2))
+    
+    u_center = (brzina_x[:, :-1] + brzina_x[:, 1:]) / 2.0
+    v_center = (brzina_y[:-1, :] + brzina_y[1:, :]) / 2.0
+
+
+    speed_field = cp.sqrt(u_center**2 + v_center**2)
+    
+
+    l2_speed = cp.sqrt(cp.mean(speed_field ** 2))
+
+    error_cpu = float(error.get())
+    l2_speed_cpu = float(l2_speed.get())
+
+    if l2_speed_cpu > 1e-6:
+        
+        accuracy = 100.0 * (1.0 - error_cpu / l2_speed_cpu)
+        
+        accuracy = max(0.0, accuracy)
+    else:
+        accuracy = 100.0 
+
+    return accuracy

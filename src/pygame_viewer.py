@@ -10,7 +10,7 @@ from realtime_simulation import FluidSimulation, PRESETS
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Fast Pygame viewer for the fluid simulation.")
-    parser.add_argument("--n", type=int, default=32, help="Grid size.")
+    parser.add_argument("--n", type=int, default=128, help="Grid size.")
     parser.add_argument("--dt", type=float, default=0.01, help="Simulation time step.")
     parser.add_argument("--h", type=float, default=0.1, help="Cell size.")
     parser.add_argument("--viscosity", type=float, default=0.08, help="Fluid viscosity.")
@@ -68,6 +68,13 @@ def parse_args():
         default=20.0,  
         help="Brzina brm brm",
 )
+
+    parser.add_argument(
+        "--density",
+        type=float,
+        default=1.0,
+        help="Gustina",
+    )
 
     return parser.parse_args()
 
@@ -139,6 +146,7 @@ def main():
 
     paused = False
     running = True
+    show_metrics = False
     view_mode = args.view_mode
     fps = 0.0
     timings = {
@@ -165,7 +173,8 @@ def main():
 
     while running:
         frame_start = time.perf_counter()
-
+ 
+ 
         event_start = time.perf_counter()
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -177,6 +186,8 @@ def main():
                     paused = not paused
                 elif event.key == pygame.K_r:
                     simulation.reset()
+                elif event.key == pygame.K_m:
+                    show_metrics = not show_metrics
                 else:
                     key_name = pygame.key.name(event.key)
                     if key_name in PRESETS:
@@ -204,7 +215,7 @@ def main():
             last_step_timings = simulation.step(args.substeps, profile=True)
             timings["sim_total_ms"] = last_step_timings["total_ms"]
 
-            divergencija_metrika, vorticitet_metrika, curl, kinetic_energy, cfl = simulation.metrics()
+            divergencija_metrika, vorticitet_metrika, curl, kinetic_energy, cfl, tacnost_L2, avg_tacnostL2 = simulation.metrics()
 
         rgb_start = time.perf_counter()
         if view_mode == "curl":
@@ -256,8 +267,10 @@ def main():
             f"vorticitet metrika {vorticitet_metrika:.2f}",
             f"curl metrika {curl:.2f}",
             f"kinetic energy {kinetic_energy:.2f}",
-            f"cfl {cfl:.2f}",
+            f"cfl {cfl:.2f}\n",
 
+            f"L2-div {tacnost_L2}",
+            f"L2-div-abf {avg_tacnostL2}",
             "render timing (ms)",
             f"events     {timings['events_ms']:6.2f}",
             f"stream     {timings['stream_ms']:6.2f}",
@@ -268,11 +281,14 @@ def main():
             f"flip       {timings['flip_ms']:6.2f}",
             f"frame      {timings['frame_ms']:6.2f}"      
         ]
-        draw_text_lines(screen, font, lines, 10, 10)
-        help_lines = ["space pause | r reset | 1-6 presets | hold L/R stream | esc quit"]
-        draw_text_lines(screen, small_font, help_lines, 10, args.size - 32)
-        timings["text_ms"] = (time.perf_counter() - text_start) * 1000.0
-
+        if show_metrics:
+            draw_text_lines(screen, font, lines, 10, 10)
+            help_lines = ["space pause | r reset | 1-6 presets | hold L/R stream | esc quit"]
+            draw_text_lines(screen, small_font, help_lines, 10, args.size - 32)
+            timings["text_ms"] = (time.perf_counter() - text_start) * 1000.0
+        else :
+            lines_small = [ f"{simulation.preset} | {status} | fps {fps:5.1f}", f"L2-div {tacnost_L2:.2f}", f"L2-div-abf {avg_tacnostL2:.2f}"]      
+            draw_text_lines(screen, font, lines_small, 5, 5)
         flip_start = time.perf_counter()
         pygame.display.flip()
         timings["flip_ms"] = (time.perf_counter() - flip_start) * 1000.0
@@ -285,7 +301,6 @@ def main():
             running = False
 
     pygame.quit()
-
 
 if __name__ == "__main__":
     main()
