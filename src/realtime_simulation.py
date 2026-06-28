@@ -13,6 +13,7 @@ PRESETS = {
     "4": "shear_layer",
     "5": "taylor_green",
     "6": "blob",
+    "7" : "lid_driven_cavity"
 }
 
 
@@ -51,6 +52,9 @@ class FluidSimulation:
 
         self.total_accuracy_sum = 0.0
         self.accuracy_frame_count = 0
+
+        self.mouse_pressed_pos = None 
+        self.mouse_timer = 0
 
         self.reset(preset)
 
@@ -364,6 +368,9 @@ class FluidSimulation:
             self.initialize_taylor_green(self.velocity_x, self.velocity_y, self.n, self.h)
         elif self.preset == "blob":
             self.initialize_blob(self.velocity_x, self.velocity_y, self.n)
+        elif self.preset == "lid_driven_cavity":
+            self.velocity_x.fill(0.0)
+            self.velocity_y.fill(0.0)
         else:
             raise ValueError(f"Unknown preset: {self.preset}")
 
@@ -387,6 +394,7 @@ class FluidSimulation:
 
         for _ in range(substeps):
             step_start = perf_counter()
+            
             b_vector = self._pressure_rhs()
             timings["rhs_ms"] += (perf_counter() - step_start) * 1000.0
 
@@ -397,6 +405,8 @@ class FluidSimulation:
             step_start = perf_counter()
             self._project_pressure()
             timings["projection_ms"] += (perf_counter() - step_start) * 1000.0
+
+            self._enforce_walls()
 
             step_start = perf_counter()
             advected_x = self.Univerzalna_Advekcija(
@@ -544,6 +554,10 @@ class FluidSimulation:
         self.velocity_y[:, 0] = 0.0
         self.velocity_y[:, -1] = 0.0
 
+        if self.preset == "lid_driven_cavity":
+            U0 = 10.0  # Možeš staviti fiksno ili izvući iz argumenata
+            self.velocity_x[0, :] = U0
+
     def add_vortex_at_cell(self, x_cell, y_cell, radius=0.5, strength=24.0):
 
         cx = float(np.clip(x_cell, 1, self.n - 2)) * self.h
@@ -573,7 +587,7 @@ class FluidSimulation:
         return curl
 
     def metrics(self):
-        
+
         divergence = metrics.DivergenceMetric(self.velocity_x, self.velocity_y)
 
         vorticity, curl = metrics.Vorticity(self.velocity_x, self.velocity_y, self.h)
@@ -623,3 +637,45 @@ class FluidSimulation:
         rgb[..., 2] = (255 * cp.clip((normalized - 0.7) * 3.0, 0.0, 1.0)).astype(cp.uint8)    # Plava se pali na kraju za čisto bele "vruće" delove
         
         return rgb
+    
+    def apply_mouse_impulse(self, start_pos, end_pos, duration, M=5):
+        
+        # Pygame daje (X, Y), pa ih ovde jasno imenujemo:
+        start_x, start_y = start_pos
+        end_x, end_y = end_pos
+        
+        # 1. Izračunaj pomeraj u ćelijama
+        dx = end_x - start_x
+        dy = end_y - start_y
+        
+        # Ako se miš nije pomerio bar za jednu ćeliju, preskoči
+        if dx == 0 and dy == 0:
+            return
+            
+        # 2. BRUTALNO POJAČANJE (Multiplier): 
+        # Umesto da delimo sa svim frejmovima, delimo sa vremenom ali uvodimo 
+        # ozbiljan multiplier (npr. 50.0 ili 100.0) da bi se efekat JASNO video!
+        multiplier = 80.0 
+        vel_x_impulse = (dx / duration) * multiplier
+        vel_y_impulse = (dy / duration) * multiplier
+        
+        # 3. Određivanje granica kernela oko POČETNE tačke
+        # Povećali smo M na 5 (5x5 kvadrat) da zahvati veću površinu fluida
+        half_m = M // 2
+        
+        # PAŽNJA: U matricama, prva dimenzija (redovi) je Y, druga (kolone) je X!
+        r_start = max(1, start_y - half_m)
+        r_end = min(self.n - 1, start_y + half_m + 1)
+        c_start = max(1, start_x - half_m)
+        c_end = min(self.n - 1, start_x + half_m + 1)
+        
+        # 4. Direktno ubrizgavanje brzine
+        # Koristimo += da dodamo impuls na već postojeće kretanje
+        self.velocity_x[r_start:r_end, c_start:c_end] += vel_x_impulse
+        self.velocity_y[r_start:r_end, c_start:c_end] += vel_y_impulse
+        
+        # Odmah forsiraš zidove da ne pukne simulacija na ivicama
+        self._enforce_walls()
+        
+        # PRINT ZA DEBAGOVANJE (Pogledaj u terminalu da li ovo ispisuje kad pustiš klik!)
+        

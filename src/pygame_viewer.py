@@ -16,7 +16,7 @@ def parse_args():
     parser.add_argument("--viscosity", type=float, default=0.08, help="Fluid viscosity.")
     parser.add_argument(
         "--preset",
-        default="shear_layer",
+        default="four_vortices",
         choices=sorted(set(PRESETS.values())),
         help="Initial velocity field.",
     )
@@ -75,21 +75,49 @@ def parse_args():
         default=1.0,
         help="Gustina",
     )
+    parser.add_argument(
+        "--theme",
+        type=str,
+        default="classic",
+        choices=["klasikica", "vatra", "emerald", "sajber"],
+        help="Izaberi kolor temu za vizuelizaciju fluida"
+    )
 
     return parser.parse_args()
 
 
-def pressure_to_rgb(pressure, pressure_scale):
-    normalized = cp.clip(pressure / pressure_scale, -1.0, 1.0)
-    positive = cp.clip(normalized, 0.0, 1.0)
-    negative = cp.clip(-normalized, 0.0, 1.0)
+def field_to_rgb(field, scale, theme_name="klasikica", is_vector_magnitude=False):
+    rgb = cp.empty((*field.shape, 3), dtype=cp.uint8)
 
-    rgb = cp.empty((*pressure.shape, 3), dtype=cp.uint8)
-    rgb[..., 0] = (35 + 220 * positive).astype(cp.uint8)
-    rgb[..., 1] = (45 + 150 * (1.0 - cp.abs(normalized))).astype(cp.uint8)
-    rgb[..., 2] = (55 + 200 * negative).astype(cp.uint8)
+    if theme_name == "vatra":
+        # Ako je intenzitet brzine, uzimamo direktno, inače radimo abs() za pritisak/curl
+        normalized = cp.clip(field / scale if is_vector_magnitude else cp.abs(field) / scale, 0.0, 1.0)
+        rgb[..., 0] = (normalized * 255).astype(cp.uint8)
+        rgb[..., 1] = ((normalized ** 2) * 255).astype(cp.uint8)
+        rgb[..., 2] = ((normalized ** 4) * 255).astype(cp.uint8)
+        
+    elif theme_name == "emerald":
+        normalized = cp.clip(field / scale if is_vector_magnitude else cp.abs(field) / scale, 0.0, 1.0)
+        rgb[..., 0] = ((normalized ** 3) * 150).astype(cp.uint8)
+        rgb[..., 1] = (50 + normalized * 205).astype(cp.uint8)
+        rgb[..., 2] = ((normalized ** 2) * 100).astype(cp.uint8)
+        
+    elif theme_name == "sajber":
+        normalized = cp.clip(field / scale if is_vector_magnitude else cp.abs(field) / scale, 0.0, 1.0)
+        rgb[..., 0] = (normalized * 255).astype(cp.uint8)
+        rgb[..., 1] = ((1.0 - normalized) * 30 + (normalized ** 2) * 20).astype(cp.uint8)
+        rgb[..., 2] = (150 + (1.0 - normalized) * 105).astype(cp.uint8)
+        
+    else:  # "klasikica"
+        normalized = cp.clip(field / scale, -1.0, 1.0)
+        positive = cp.clip(normalized, 0.0, 1.0)
+        negative = cp.clip(-normalized, 0.0, 1.0)
+        
+        rgb[..., 0] = (35 + 220 * positive).astype(cp.uint8)
+        rgb[..., 1] = (45 + 150 * (1.0 - cp.abs(normalized))).astype(cp.uint8)
+        rgb[..., 2] = (55 + 200 * negative).astype(cp.uint8)
+
     return rgb
-
 
 def draw_velocity_arrows(surface, simulation, viewport_size, stride):
     u_center, v_center = simulation.centered_velocity()
@@ -125,7 +153,6 @@ def draw_text_lines(surface, font, lines, x, y, color=(235, 240, 245)):
     for index, line in enumerate(lines):
         rendered = font.render(line, True, color)
         surface.blit(rendered, (x + 6, y + 5 + index * line_height))
-
 
 def main():
     args = parse_args()
@@ -171,12 +198,19 @@ def main():
         "total_ms": 0.0,
     }
 
+    mouse_pressed_pos = None
+    mouse_timer = 0
+
     while running:
         frame_start = time.perf_counter()
  
  
         event_start = time.perf_counter()
         for event in pygame.event.get():
+
+
+            
+
             if event.type == pygame.QUIT:
                 running = False
             elif event.type == pygame.KEYDOWN:
@@ -188,21 +222,67 @@ def main():
                     simulation.reset()
                 elif event.key == pygame.K_m:
                     show_metrics = not show_metrics
+                    
                 else:
                     key_name = pygame.key.name(event.key)
                     if key_name in PRESETS:
                         simulation.reset(PRESETS[key_name])
+
+        mouse_buttons = pygame.mouse.get_pressed(num_buttons=3)
+        current_mouse_pos = pygame.mouse.get_pos()
+        screen_size = screen.get_width()
+
+        
+        cx = int(current_mouse_pos[0] / (screen_size / simulation.n))
+        cy = int(current_mouse_pos[1] / (screen_size / simulation.n))
+        cx = max(0, min(simulation.n - 1, cx))
+        cy = max(0, min(simulation.n - 1, cy))
+
+        
+        if mouse_buttons[0]:
+            if mouse_pressed_pos is None:
+                
+                mouse_pressed_pos = (cx, cy)
+                mouse_timer = 0
+
+            else:
+                
+                mouse_timer += 1
+    
+        elif mouse_pressed_pos is not None and not mouse_buttons[0]:
+            duration = max(1, mouse_timer)
+
+            simulation.apply_mouse_impulse(mouse_pressed_pos, (cx, cy), duration)
+            
+            
+            mouse_pressed_pos = None
+
+        
+        if mouse_buttons[2]:
+            if 0 <= current_mouse_pos[0] < args.size and 0 <= current_mouse_pos[1] < args.size:
+                stream_strength = args.stream_strength * -1.0
+                simulation.add_vortex_at_cell(
+                    current_mouse_pos[0] / args.size * simulation.n,
+                    current_mouse_pos[1] / args.size * simulation.n,
+                    radius=args.stream_radius,
+                    strength=stream_strength,
+                )
+        
+        
         timings["events_ms"] = (time.perf_counter() - event_start) * 1000.0
 
+        
         stream_start = time.perf_counter()
         stream_strength = 0.0
+        
+
         mouse_buttons = pygame.mouse.get_pressed(num_buttons=3)
-        if mouse_buttons[0] or mouse_buttons[2]:
+        
+
+        if mouse_buttons[2]:
             x, y = pygame.mouse.get_pos()
             if 0 <= x < args.size and 0 <= y < args.size:
-                stream_strength = args.stream_strength
-                if mouse_buttons[2]:
-                    stream_strength *= -1.0
+                stream_strength = args.stream_strength * -1.0
                 simulation.add_vortex_at_cell(
                     x / args.size * simulation.n,
                     y / args.size * simulation.n,
@@ -219,11 +299,15 @@ def main():
 
         rgb_start = time.perf_counter()
         if view_mode == "curl":
-            rgb = simulation.curl_to_rgb(simulation.curl_field(), args.curl_scale)
+            
+            rgb = field_to_rgb(simulation.curl_field(), args.curl_scale, args.theme, is_vector_magnitude=False)
         elif view_mode == "speed":
-            rgb = simulation.speed_to_rgb(simulation.speed(), args.speed_scale)
+            
+            rgb = field_to_rgb(simulation.speed(), args.speed_scale, args.theme, is_vector_magnitude=True)
         else:
-            rgb = pressure_to_rgb(simulation.pressure, args.pressure_scale)
+            
+            rgb = field_to_rgb(simulation.pressure, args.pressure_scale, args.theme, is_vector_magnitude=False)
+        timings["rgb_ms"] = (time.perf_counter() - rgb_start) * 1000.0
         timings["rgb_ms"] = (time.perf_counter() - rgb_start) * 1000.0
         timings["rgb_ms"] = (time.perf_counter() - rgb_start) * 1000.0
 
