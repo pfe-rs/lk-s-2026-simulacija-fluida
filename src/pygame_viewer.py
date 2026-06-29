@@ -5,12 +5,12 @@ import numpy as np
 import cupy as cp
 import pygame
 
-from realtime_simulation import FluidSimulation, PRESETS
+from kontinuitet import FluidSimulation, PRESETS
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Fast Pygame viewer for the fluid simulation.")
-    parser.add_argument("--n", type=int, default=128, help="Grid size.")
+    parser.add_argument("--n", type=int, default=256, help="Grid size.")
     parser.add_argument("--dt", type=float, default=0.01, help="Simulation time step.")
     parser.add_argument("--h", type=float, default=0.1, help="Cell size.")
     parser.add_argument("--viscosity", type=float, default=0.08, help="Fluid viscosity.")
@@ -25,10 +25,14 @@ def parse_args():
     parser.add_argument(
         "--quiver-stride",
         type=int,
-        default=2,
+        default=7,
         help="Draw every Nth velocity arrow.",
     )
-    parser.add_argument("--no-quiver", action="store_true", help="Hide velocity arrows.")
+    parser.add_argument(
+        "--quiver", 
+        action="store_true", 
+        help="Prikaži strelice vektorskog polja brzine (podrazumevano je skriveno)."
+    )
     parser.add_argument("--max-fps", type=int, default=60, help="0 means uncapped.")
     parser.add_argument("--frames", type=int, default=0, help="Quit after N frames. 0 means run forever.")
     parser.add_argument(
@@ -82,15 +86,72 @@ def parse_args():
         choices=["klasikica", "vatra", "emerald", "sajber"],
         help="Izaberi kolor temu za vizuelizaciju fluida"
     )
+    parser.add_argument(
+        "--damping",
+        type=float,
+        default=95,
+        help="Faktor prigušenja brzine fluida po frejmu (npr. 0.995 za lagano nestajanje).",
+    )
 
     return parser.parse_args()
 
+def draw_help_menu(surface, font, title_font, viewport_size):
+
+    menu_w, menu_h = 550, 550
+    menu_x = (viewport_size - menu_w) // 2
+    menu_y = (viewport_size - menu_h) // 2
+    
+    overlay = pygame.Surface((menu_w, menu_h), pygame.SRCALPHA)
+    overlay.fill((10, 15, 25, 235))  
+    
+    pygame.draw.rect(overlay, (0, 180, 255), (0, 0, menu_w, menu_h), 2, border_radius=8)
+    
+    
+    title = title_font.render("KONTROLE SIMULACIJE", True, (0, 180, 255))
+    overlay.blit(title, (menu_w // 2 - title.get_width() // 2, 20))
+    
+
+    pygame.draw.line(overlay, (40, 50, 70), (30, 55), (menu_w - 30, 55), 1)
+    
+    kontrole = [
+        ("SPACE", "Pauza"),
+        ("R", "Reset"),
+        ("M", "Metrike"),
+        ("ESC", "Izlaz iz aplikacije"),
+        ("TASTERI 1 - 6", "Presetovi"),
+        ("K, P, S", "Curl, Pressure, Speed mode"),
+        ("t", "teme šaltanje"),
+
+    ]
+    
+    start_y = 75
+    for taster, opis in kontrole:
+        if taster == "" and opis == "":
+            start_y += 15
+            continue
+            
+        
+        txt_taster = font.render(taster, True, (240, 245, 255))
+        overlay.blit(txt_taster, (30, start_y))
+        
+        
+        txt_opis = font.render(f" -  {opis}", True, (170, 180, 195))
+        overlay.blit(txt_opis, (220, start_y))
+        
+        start_y += 26
+        
+    
+    pygame.draw.line(overlay, (40, 50, 70), (30, menu_h - 45), (menu_w - 30, menu_h - 45), 1)
+    footer = font.render("aki i laki", True, (100, 115, 135))
+    overlay.blit(footer, (menu_w // 2 - footer.get_width() // 2, menu_h - 32))
+    
+    surface.blit(overlay, (menu_x, menu_y))
 
 def field_to_rgb(field, scale, theme_name="klasikica", is_vector_magnitude=False):
     rgb = cp.empty((*field.shape, 3), dtype=cp.uint8)
 
     if theme_name == "vatra":
-        # Ako je intenzitet brzine, uzimamo direktno, inače radimo abs() za pritisak/curl
+        
         normalized = cp.clip(field / scale if is_vector_magnitude else cp.abs(field) / scale, 0.0, 1.0)
         rgb[..., 0] = (normalized * 255).astype(cp.uint8)
         rgb[..., 1] = ((normalized ** 2) * 255).astype(cp.uint8)
@@ -108,7 +169,7 @@ def field_to_rgb(field, scale, theme_name="klasikica", is_vector_magnitude=False
         rgb[..., 1] = ((1.0 - normalized) * 30 + (normalized ** 2) * 20).astype(cp.uint8)
         rgb[..., 2] = (150 + (1.0 - normalized) * 105).astype(cp.uint8)
         
-    else:  # "klasikica"
+    else:  
         normalized = cp.clip(field / scale, -1.0, 1.0)
         positive = cp.clip(normalized, 0.0, 1.0)
         negative = cp.clip(-normalized, 0.0, 1.0)
@@ -170,6 +231,7 @@ def main():
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("consolas", 15)
     small_font = pygame.font.SysFont("consolas", 13)
+    title_font = pygame.font.SysFont("consolas", 18, bold=True) 
 
     paused = False
     running = True
@@ -201,6 +263,8 @@ def main():
     mouse_pressed_pos = None
     mouse_timer = 0
 
+    sve_teme = ["klasikica", "vatra", "emerald", "sajber"]
+    tema_idx = 0
     while running:
         frame_start = time.perf_counter()
  
@@ -222,7 +286,20 @@ def main():
                     simulation.reset()
                 elif event.key == pygame.K_m:
                     show_metrics = not show_metrics
-                    
+                elif event.key == pygame.K_k:
+                    view_mode = "curl"    
+                elif event.key == pygame.K_s:
+                    view_mode = "speed"
+                elif event.key == pygame.K_p:
+                    view_mode = "pressure"
+                elif event.key == pygame.K_t:         
+                    if tema_idx != (len(sve_teme) - 1):
+                        args.theme = sve_teme[tema_idx + 1]
+                        tema_idx += 1
+                    else:
+                        tema_idx = 0
+                        args.theme = sve_teme[tema_idx]
+            
                 else:
                     key_name = pygame.key.name(event.key)
                     if key_name in PRESETS:
@@ -295,11 +372,13 @@ def main():
             last_step_timings = simulation.step(args.substeps, profile=True)
             timings["sim_total_ms"] = last_step_timings["total_ms"]
 
+            simulation.velocity_x *= (args.damping / 100)
+            simulation.velocity_y *= (args.damping / 100)
+
             divergencija_metrika, vorticitet_metrika, curl, kinetic_energy, cfl, tacnost_L2, avg_tacnostL2 = simulation.metrics()
 
         rgb_start = time.perf_counter()
         if view_mode == "curl":
-            
             rgb = field_to_rgb(simulation.curl_field(), args.curl_scale, args.theme, is_vector_magnitude=False)
         elif view_mode == "speed":
             
@@ -319,8 +398,10 @@ def main():
         timings["scale_ms"] = (time.perf_counter() - scale_start) * 1000.0
 
         quiver_start = time.perf_counter()
-        if not args.no_quiver:
+
+        if args.quiver:
             draw_velocity_arrows(screen, simulation, args.size, max(1, args.quiver_stride))
+            
         if stream_strength != 0.0:
             color = (255, 230, 120) if stream_strength > 0.0 else (125, 210, 255)
             pygame.draw.circle(screen, color, pygame.mouse.get_pos(), 12, 2)
@@ -371,8 +452,13 @@ def main():
             draw_text_lines(screen, small_font, help_lines, 10, args.size - 32)
             timings["text_ms"] = (time.perf_counter() - text_start) * 1000.0
         else :
-            lines_small = [ f"{simulation.preset} | {status} | fps {fps:5.1f}", f"L2-div {tacnost_L2:.2f}", f"L2-div-abf {avg_tacnostL2:.2f}"]      
+            lines_small = [ f"{simulation.preset} | {status} | fps {fps:5.1f}", f"L2-div {tacnost_L2:.2f}", f"L2-div-abf {avg_tacnostL2:.2f}", f"Kontrole - TAB"]      
             draw_text_lines(screen, font, lines_small, 5, 5)
+
+        keys = pygame.key.get_pressed()
+        if keys[pygame.K_TAB]:
+            draw_help_menu(screen, font, title_font, args.size)
+
         flip_start = time.perf_counter()
         pygame.display.flip()
         timings["flip_ms"] = (time.perf_counter() - flip_start) * 1000.0

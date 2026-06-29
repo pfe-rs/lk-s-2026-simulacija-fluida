@@ -40,6 +40,7 @@ class FluidSimulation:
         self.cell_type[-1, :] = 0
         self.cell_type[:, 0] = 0
         self.cell_type[:, -1] = 0
+        #self.cell_type[n/2, ] = 0
 
         self.index_map = self.IndexMap(self.cell_type)
         self.system_matrix = self._build_sparse_system_matrix(self.index_map)
@@ -163,7 +164,7 @@ class FluidSimulation:
 
         N = int(np.max(mapa_indexa) + 1)
         
-        # REŠENJE: Pravimo RETKU matricu direktno, u:mesto guste od 31 GB!
+        
         matrica_a = lil_matrix((N, N), dtype=np.float64) 
 
         broj_redova, broj_kolona = mapa_indexa.shape
@@ -471,11 +472,12 @@ class FluidSimulation:
     def _pressure_rhs(self):
 
         return self.vectorB(
-            self.cell_type, 
+            self.cell_type,
+            self.index_map,
             self.velocity_x, 
             self.velocity_y, 
             self.density, 
-            self.dt, 
+            self.dt,
             self.h
         )
     
@@ -502,27 +504,6 @@ class FluidSimulation:
         pressure[self.fluid_mask] = pressure_vector[self.index_map[self.fluid_mask]]
         pressure[self.fluid_mask] -= cp.mean(pressure[self.fluid_mask])
         return pressure
-
-    def _pressure_rhs(self):
-        unknown_count = int(cp.max(self.index_map) + 1)
-        b_vector = cp.zeros(unknown_count)
-
-        u_left = self.velocity_x[:, :-1].copy()
-        u_right = self.velocity_x[:, 1:].copy()
-        v_top = self.velocity_y[:-1, :].copy()
-        v_bottom = self.velocity_y[1:, :].copy()
-
-        u_left[:, 1:] = cp.where(self.cell_type[:, :-1] == 0, 0.0, u_left[:, 1:])
-        u_right[:, :-1] = cp.where(self.cell_type[:, 1:] == 0, 0.0, u_right[:, :-1])
-        v_top[1:, :] = cp.where(self.cell_type[:-1, :] == 0, 0.0, v_top[1:, :])
-        v_bottom[:-1, :] = cp.where(self.cell_type[1:, :] == 0, 0.0, v_bottom[:-1, :])
-
-        divergence = (u_right - u_left) + (v_bottom - v_top)
-        b_vector[self.index_map[self.fluid_mask]] = (
-            self.density * self.h / self.dt
-        ) * divergence[self.fluid_mask]
-
-        return b_vector
 
     def _project_pressure(self):
         pressure_scale = self.dt / (self.density * self.h)
@@ -555,7 +536,7 @@ class FluidSimulation:
         self.velocity_y[:, -1] = 0.0
 
         if self.preset == "lid_driven_cavity":
-            U0 = 10.0  # Možeš staviti fiksno ili izvući iz argumenata
+            U0 = 0.0  # Možeš staviti fiksno ili izvući iz argumenata
             self.velocity_x[0, :] = U0
 
     def add_vortex_at_cell(self, x_cell, y_cell, radius=0.5, strength=24.0):
@@ -644,38 +625,31 @@ class FluidSimulation:
         start_x, start_y = start_pos
         end_x, end_y = end_pos
         
-        # 1. Izračunaj pomeraj u ćelijama
         dx = end_x - start_x
         dy = end_y - start_y
         
-        # Ako se miš nije pomerio bar za jednu ćeliju, preskoči
         if dx == 0 and dy == 0:
             return
             
-        # 2. BRUTALNO POJAČANJE (Multiplier): 
-        # Umesto da delimo sa svim frejmovima, delimo sa vremenom ali uvodimo 
-        # ozbiljan multiplier (npr. 50.0 ili 100.0) da bi se efekat JASNO video!
         multiplier = 80.0 
         vel_x_impulse = (dx / duration) * multiplier
         vel_y_impulse = (dy / duration) * multiplier
         
-        # 3. Određivanje granica kernela oko POČETNE tačke
-        # Povećali smo M na 5 (5x5 kvadrat) da zahvati veću površinu fluida
+        
         half_m = M // 2
         
-        # PAŽNJA: U matricama, prva dimenzija (redovi) je Y, druga (kolone) je X!
+        
         r_start = max(1, start_y - half_m)
         r_end = min(self.n - 1, start_y + half_m + 1)
         c_start = max(1, start_x - half_m)
         c_end = min(self.n - 1, start_x + half_m + 1)
         
-        # 4. Direktno ubrizgavanje brzine
-        # Koristimo += da dodamo impuls na već postojeće kretanje
-        self.velocity_x[r_start:r_end, c_start:c_end] += vel_x_impulse
-        self.velocity_y[r_start:r_end, c_start:c_end] += vel_y_impulse
         
-        # Odmah forsiraš zidove da ne pukne simulacija na ivicama
+        
+        self.velocity_x[r_start:r_end, c_start:c_end] += vel_x_impulse * 1.5 
+        self.velocity_y[r_start:r_end, c_start:c_end] += vel_y_impulse * 1.5
+        
+        
         self._enforce_walls()
         
-        # PRINT ZA DEBAGOVANJE (Pogledaj u terminalu da li ovo ispisuje kad pustiš klik!)
         
