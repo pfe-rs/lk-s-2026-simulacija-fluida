@@ -39,27 +39,6 @@ def Univerzalna_Advekcija(polje, brzina_x, brzina_y, tip_pozicije, dt=0.05, h=0.
                                polje[i1, j1] * alfa * beta
     return novo_polje
 
-def Viskoznost(brzina_x, brzina_y, dt, h, ni):
-    x_privremena = np.zeros_like(brzina_x)
-    y_privremena = np.zeros_like(brzina_y)
-
-    x_redovi, x_kolone = brzina_x.shape
-    y_redovi, y_kolone = brzina_y.shape
-
-    for i in range(1, x_redovi - 1):
-        for j in range(1, x_kolone - 1):
-            viskoznost_x = ni * dt * (brzina_x[i - 1, j] + brzina_x[i, j - 1] + brzina_x[i, j + 1] + \
-                                      brzina_x[i + 1, j + 1] - 4*brzina_x[i, j]) / (h**2) 
-            x_privremena[i, j] = brzina_x[i, j] + viskoznost_x
-
-    for i in range(1, y_redovi - 1):
-        for j in range(1, y_kolone - 1):
-            viskoznost_y = ni * dt * (brzina_y[i - 1, j] + brzina_y[i, j - 1] + brzina_y[i, j + 1] + \
-                                      brzina_y[i + 1, j + 1] - 4*brzina_y[i, j]) / (h**2) 
-            y_privremena[i, j] = brzina_y[i, j] + viskoznost_y
-    
-    return x_privremena, y_privremena
-
 def Univerzalna_Difuzija(polje, ni, dt, h):
 
     novo_polje = np.copy(polje) 

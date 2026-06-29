@@ -1,8 +1,15 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from essential_functions import *
 import matplotlib.animation as animation
-from scipy.sparse.linalg import cg
+from essential_functions import (
+    IndexMap,
+    IzracunajPritisak,
+    Matrica_A,
+    Univerzalna_Advekcija,
+    Univerzalna_Difuzija,
+    initialize_shear_layer,
+    vectorB,
+)
 
 # ==========================================================
 # GLAVNA INICIJALIZACIJA SIMULACIJE (32x32)
@@ -48,7 +55,6 @@ X, Y = np.meshgrid(np.arange(N), np.arange(N))
 fig, ax = plt.subplots(figsize=(8, 8))
 
 P_prikaz = np.zeros((N, N))
-im = ax.imshow(P_prikaz, cmap='jet', origin='upper', extent=[-0.5, N-0.5, N-0.5, -0.5], vmin=-5.0, vmax=5.0)
 im = ax.imshow(P_prikaz, cmap='jet', origin='upper', extent=[-0.5, N-0.5, N-0.5, -0.5], vmin=-5.0, vmax=5.0)
 kviver = ax.quiver(X, Y, np.zeros((N, N)), np.zeros((N, N)), color='white', scale=100, width=0.003)
 
@@ -148,4 +154,4 @@ writer = animation.PillowWriter(fps=30)
 # Čuvamo animaciju pod imenom 'simulacija_fluida.gif'
 ani.save('simulacija_fluida_120fps_kratka.gif', writer=writer)
 
-print("GIF uspešno sačuvan kao 'simulacija_fluida.gif'!")"""
+print("GIF uspešno sačuvan kao 'simulacija_fluida.gif'!")

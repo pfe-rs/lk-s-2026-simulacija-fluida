@@ -1,7 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from essential_functions import Univerzalna_Advekcija, Univerzalna_Difuzija, IndexMap, vectorB, Matrica_A
-import matplotlib.animation as animation
+from essential_functions import Univerzalna_Advekcija, Univerzalna_Difuzija
 
 #GEMINI KOD NIJE MOJA VIZUALIZACIJA !!!! SAMO TRENUTNI TEST 
 # ==========================================
