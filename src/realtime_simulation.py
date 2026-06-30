@@ -173,6 +173,8 @@ class FluidSimulation:
             raise ValueError(f"Unknown preset: {self.preset}")
 
         self.pressure.fill(0.0)
+        self.pressure_next.fill(0.0)
+        self.pressure_rhs_grid.fill(0.0)
         self.frame = 0
 
     def step(self, substeps=1, profile=False):
@@ -248,6 +250,7 @@ class FluidSimulation:
         ]
 
         if self.pressure_solver == "jacobi":
+            self.pressure_rhs_grid[self.fluid_mask] -= cp.mean(self.pressure_rhs_grid[self.fluid_mask])
             return self.pressure_rhs_grid
 
         b = cp.zeros(self.unknown_count, dtype=self.dtype)
@@ -295,17 +298,15 @@ class FluidSimulation:
         return self.pressure
 
     def _solve_pressure_jacobi(self, rhs_grid):
-        self.pressure[0, 0] = 0.0
         for _ in range(self.pressure_iterations):
-            neighbor_sum = (
-                cp.roll(self.pressure, 1, axis=0)
-                + cp.roll(self.pressure, -1, axis=0)
-                + cp.roll(self.pressure, 1, axis=1)
-                + cp.roll(self.pressure, -1, axis=1)
-            )
+            self.pressure_next.fill(0.0)
+            self.pressure_next[1:, :] += self.pressure[:-1, :]
+            self.pressure_next[:-1, :] += self.pressure[1:, :]
+            self.pressure_next[:, 1:] += self.pressure[:, :-1]
+            self.pressure_next[:, :-1] += self.pressure[:, 1:]
             self.pressure_next[:, :] = cp.where(
                 self.fluid_mask,
-                (neighbor_sum - rhs_grid) / self.pressure_neighbor_count,
+                (self.pressure_next - rhs_grid) / self.pressure_neighbor_count,
                 0.0,
             )
             self.pressure, self.pressure_next = self.pressure_next, self.pressure
