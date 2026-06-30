@@ -1,5 +1,6 @@
 import numpy as np
 import cupy as cp
+from inspect import signature
 from cupyx.scipy import sparse as cp_sparse
 from cupyx.scipy.sparse.linalg import cg as gpu_cg
 from scipy.sparse import lil_matrix
@@ -36,6 +37,7 @@ class FluidSimulation:
         self.preset = preset
         self.pressure_tol = pressure_tol
         self.pressure_maxiter = pressure_maxiter
+        self.cg_tolerance_name = "rtol" if "rtol" in signature(gpu_cg).parameters else "tol"
         self.frame = 0
 
         self.cell_type = cp.ones((n, n), dtype=cp.int32)
@@ -191,11 +193,14 @@ class FluidSimulation:
     def _solve_pressure(self, b_vector):
         anchored_b = b_vector.copy()
         anchored_b[0] = 0.0
+        cg_options = {
+            self.cg_tolerance_name: self.pressure_tol,
+            "maxiter": self.pressure_maxiter,
+        }
         pressure_vector, info = gpu_cg(
             self.pressure_matrix,
             -anchored_b,
-            tol=self.pressure_tol,
-            maxiter=self.pressure_maxiter,
+            **cg_options,
         )
         if int(info) != 0:
             raise RuntimeError(f"GPU pressure solve did not converge, cg info={int(info)}")
