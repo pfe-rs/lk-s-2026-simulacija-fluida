@@ -29,6 +29,8 @@ class FluidSimulation:
         pressure_tol=1e-4,
         pressure_maxiter=None,
         pressure_direct_limit=4096,
+        pressure_solver="auto",
+        pressure_iterations=40,
         dtype=cp.float32,
     ):
         self.n = n
@@ -40,6 +42,8 @@ class FluidSimulation:
         self.pressure_tol = pressure_tol
         self.pressure_maxiter = pressure_maxiter
         self.pressure_direct_limit = pressure_direct_limit
+        self.requested_pressure_solver = pressure_solver
+        self.pressure_iterations = pressure_iterations
         self.dtype = dtype
         self.cpu_dtype = np.float32 if dtype == cp.float32 else np.float64
         self.cg_tolerance_name = "rtol" if "rtol" in signature(gpu_cg).parameters else "tol"
@@ -57,16 +61,20 @@ class FluidSimulation:
         self.fluid_mask = self.index_map != -1
         self.fluid_vector_indices = self.index_map[self.fluid_mask]
         self.unknown_count = int(np.max(self.index_map_cpu) + 1)
+        self.pressure_solver = self._select_pressure_solver()
         self.pressure_matrix = self._build_gpu_pressure_matrix()
         self.pressure_inverse = self._build_gpu_pressure_inverse()
 
         self.velocity_x = cp.zeros((n, n + 1), dtype=self.dtype)
         self.velocity_y = cp.zeros((n + 1, n), dtype=self.dtype)
         self.pressure = cp.zeros((n, n), dtype=self.dtype)
+        self.pressure_next = cp.zeros((n, n), dtype=self.dtype)
+        self.pressure_rhs_grid = cp.zeros((n, n), dtype=self.dtype)
         self.x_i_grid, self.x_j_grid = cp.indices(self.velocity_x.shape)
         self.y_i_grid, self.y_j_grid = cp.indices(self.velocity_y.shape)
         self.x_pressure_mask = (self.cell_type[:, 1:] != 0) & (self.cell_type[:, :-1] != 0)
         self.y_pressure_mask = (self.cell_type[1:, :] != 0) & (self.cell_type[:-1, :] != 0)
+        self.pressure_neighbor_count = self._build_pressure_neighbor_count()
 
         self.reset(preset)
 
@@ -94,7 +102,26 @@ class FluidSimulation:
         index_map[fluid_mask] = np.arange(np.count_nonzero(fluid_mask), dtype=np.int32)
         return index_map
 
+    def _select_pressure_solver(self):
+        if self.requested_pressure_solver != "auto":
+            return self.requested_pressure_solver
+        if self.pressure_direct_limit > 0 and self.unknown_count <= self.pressure_direct_limit:
+            return "direct"
+        return "jacobi"
+
+    def _build_pressure_neighbor_count(self):
+        fluid = self.cell_type != 0
+        count = cp.zeros(self.cell_type.shape, dtype=self.dtype)
+        count[1:, :] += fluid[:-1, :]
+        count[:-1, :] += fluid[1:, :]
+        count[:, 1:] += fluid[:, :-1]
+        count[:, :-1] += fluid[:, 1:]
+        return cp.where(self.fluid_mask, cp.maximum(count, 1.0), 1.0)
+
     def _build_gpu_pressure_matrix(self):
+        if self.pressure_solver not in ("direct", "cg"):
+            return None
+
         matrix = lil_matrix((self.unknown_count, self.unknown_count), dtype=self.cpu_dtype)
         rows, columns = self.index_map_cpu.shape
 
@@ -122,7 +149,7 @@ class FluidSimulation:
         return -cp_sparse.csr_matrix(anchored.tocsr())
 
     def _build_gpu_pressure_inverse(self):
-        if self.unknown_count > self.pressure_direct_limit:
+        if self.pressure_solver != "direct":
             return None
         return cp.linalg.inv(self.pressure_matrix.toarray().astype(self.dtype, copy=False))
 
@@ -203,7 +230,7 @@ class FluidSimulation:
         self.frame += 1
 
     def _pressure_rhs(self):
-        b = cp.zeros(self.unknown_count, dtype=self.dtype)
+        self.pressure_rhs_grid.fill(0.0)
 
         u_left = self.velocity_x[:, :-1].copy()
         u_right = self.velocity_x[:, 1:].copy()
@@ -216,30 +243,73 @@ class FluidSimulation:
         v_bottom[:-1, :] = cp.where(self.cell_type[1:, :] == 0, 0.0, v_bottom[:-1, :])
 
         divergence = (u_right - u_left) + (v_bottom - v_top)
-        b[self.fluid_vector_indices] = (self.density * self.h / self.dt) * divergence[self.fluid_mask]
+        self.pressure_rhs_grid[self.fluid_mask] = (self.density * self.h / self.dt) * divergence[
+            self.fluid_mask
+        ]
+
+        if self.pressure_solver == "jacobi":
+            return self.pressure_rhs_grid
+
+        b = cp.zeros(self.unknown_count, dtype=self.dtype)
+        b[self.fluid_vector_indices] = self.pressure_rhs_grid[self.fluid_mask]
         return b
 
-    def _solve_pressure(self, b_vector):
+    def _solve_pressure(self, pressure_rhs):
+        if self.pressure_solver == "jacobi":
+            return self._solve_pressure_jacobi(pressure_rhs)
+        if self.pressure_solver == "direct":
+            return self._solve_pressure_direct(pressure_rhs)
+        if self.pressure_solver == "cg":
+            return self._solve_pressure_cg(pressure_rhs)
+        raise ValueError(f"Unknown pressure solver: {self.pressure_solver}")
+
+    def _solve_pressure_direct(self, b_vector):
         anchored_b = b_vector.copy()
         anchored_b[0] = 0.0
 
-        if self.pressure_inverse is not None:
-            pressure_vector = self.pressure_inverse @ (-anchored_b)
-        else:
-            cg_options = {
-                self.cg_tolerance_name: self.pressure_tol,
-                "maxiter": self.pressure_maxiter,
-            }
-            pressure_vector, info = gpu_cg(
-                self.pressure_matrix,
-                -anchored_b,
-                **cg_options,
-            )
-            if int(info) != 0:
-                raise RuntimeError(f"GPU pressure solve did not converge, cg info={int(info)}")
+        pressure_vector = self.pressure_inverse @ (-anchored_b)
 
         self.pressure.fill(0.0)
         self.pressure[self.fluid_mask] = pressure_vector[self.fluid_vector_indices]
+        self.pressure[self.fluid_mask] -= cp.mean(self.pressure[self.fluid_mask])
+        return self.pressure
+
+    def _solve_pressure_cg(self, b_vector):
+        anchored_b = b_vector.copy()
+        anchored_b[0] = 0.0
+        cg_options = {
+            self.cg_tolerance_name: self.pressure_tol,
+            "maxiter": self.pressure_maxiter,
+        }
+        pressure_vector, info = gpu_cg(
+            self.pressure_matrix,
+            -anchored_b,
+            **cg_options,
+        )
+        if int(info) != 0:
+            raise RuntimeError(f"GPU pressure solve did not converge, cg info={int(info)}")
+
+        self.pressure.fill(0.0)
+        self.pressure[self.fluid_mask] = pressure_vector[self.fluid_vector_indices]
+        self.pressure[self.fluid_mask] -= cp.mean(self.pressure[self.fluid_mask])
+        return self.pressure
+
+    def _solve_pressure_jacobi(self, rhs_grid):
+        self.pressure[0, 0] = 0.0
+        for _ in range(self.pressure_iterations):
+            neighbor_sum = (
+                cp.roll(self.pressure, 1, axis=0)
+                + cp.roll(self.pressure, -1, axis=0)
+                + cp.roll(self.pressure, 1, axis=1)
+                + cp.roll(self.pressure, -1, axis=1)
+            )
+            self.pressure_next[:, :] = cp.where(
+                self.fluid_mask,
+                (neighbor_sum - rhs_grid) / self.pressure_neighbor_count,
+                0.0,
+            )
+            self.pressure, self.pressure_next = self.pressure_next, self.pressure
+
         self.pressure[self.fluid_mask] -= cp.mean(self.pressure[self.fluid_mask])
         return self.pressure
 

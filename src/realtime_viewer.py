@@ -28,6 +28,18 @@ def parse_args():
         help="Use precomputed GPU dense inverse up to this unknown count. 0 disables it.",
     )
     parser.add_argument(
+        "--pressure-solver",
+        choices=("auto", "direct", "jacobi", "cg"),
+        default="auto",
+        help="GPU pressure solver. auto uses direct for small grids and Jacobi for larger grids.",
+    )
+    parser.add_argument(
+        "--pressure-iterations",
+        type=int,
+        default=40,
+        help="Jacobi pressure iterations when using the jacobi solver.",
+    )
+    parser.add_argument(
         "--preset",
         default="shear_layer",
         choices=sorted(set(PRESETS.values())),
@@ -87,6 +99,8 @@ def main():
         pressure_tol=args.pressure_tol,
         pressure_maxiter=args.pressure_maxiter or None,
         pressure_direct_limit=args.pressure_direct_limit,
+        pressure_solver=args.pressure_solver,
+        pressure_iterations=args.pressure_iterations,
     )
 
     quiver_stride = max(1, args.quiver_stride)
