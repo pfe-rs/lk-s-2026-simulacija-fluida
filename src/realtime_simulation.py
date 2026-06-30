@@ -28,6 +28,7 @@ class FluidSimulation:
         preset="shear_layer",
         pressure_tol=1e-4,
         pressure_maxiter=None,
+        pressure_direct_limit=4096,
         dtype=cp.float32,
     ):
         self.n = n
@@ -38,6 +39,7 @@ class FluidSimulation:
         self.preset = preset
         self.pressure_tol = pressure_tol
         self.pressure_maxiter = pressure_maxiter
+        self.pressure_direct_limit = pressure_direct_limit
         self.dtype = dtype
         self.cpu_dtype = np.float32 if dtype == cp.float32 else np.float64
         self.cg_tolerance_name = "rtol" if "rtol" in signature(gpu_cg).parameters else "tol"
@@ -53,14 +55,18 @@ class FluidSimulation:
         self.index_map_cpu = self._build_index_map(self.cell_type_cpu)
         self.index_map = cp.asarray(self.index_map_cpu)
         self.fluid_mask = self.index_map != -1
+        self.fluid_vector_indices = self.index_map[self.fluid_mask]
         self.unknown_count = int(np.max(self.index_map_cpu) + 1)
         self.pressure_matrix = self._build_gpu_pressure_matrix()
+        self.pressure_inverse = self._build_gpu_pressure_inverse()
 
         self.velocity_x = cp.zeros((n, n + 1), dtype=self.dtype)
         self.velocity_y = cp.zeros((n + 1, n), dtype=self.dtype)
         self.pressure = cp.zeros((n, n), dtype=self.dtype)
         self.x_i_grid, self.x_j_grid = cp.indices(self.velocity_x.shape)
         self.y_i_grid, self.y_j_grid = cp.indices(self.velocity_y.shape)
+        self.x_pressure_mask = (self.cell_type[:, 1:] != 0) & (self.cell_type[:, :-1] != 0)
+        self.y_pressure_mask = (self.cell_type[1:, :] != 0) & (self.cell_type[:-1, :] != 0)
 
         self.reset(preset)
 
@@ -114,6 +120,11 @@ class FluidSimulation:
         anchored[0, 0] = -1.0
 
         return -cp_sparse.csr_matrix(anchored.tocsr())
+
+    def _build_gpu_pressure_inverse(self):
+        if self.unknown_count > self.pressure_direct_limit:
+            return None
+        return cp.linalg.inv(self.pressure_matrix.toarray().astype(self.dtype, copy=False))
 
     def reset(self, preset=None):
         if preset is not None:
@@ -205,46 +216,46 @@ class FluidSimulation:
         v_bottom[:-1, :] = cp.where(self.cell_type[1:, :] == 0, 0.0, v_bottom[:-1, :])
 
         divergence = (u_right - u_left) + (v_bottom - v_top)
-        b[self.index_map[self.fluid_mask]] = (self.density * self.h / self.dt) * divergence[
-            self.fluid_mask
-        ]
+        b[self.fluid_vector_indices] = (self.density * self.h / self.dt) * divergence[self.fluid_mask]
         return b
 
     def _solve_pressure(self, b_vector):
         anchored_b = b_vector.copy()
         anchored_b[0] = 0.0
-        cg_options = {
-            self.cg_tolerance_name: self.pressure_tol,
-            "maxiter": self.pressure_maxiter,
-        }
-        pressure_vector, info = gpu_cg(
-            self.pressure_matrix,
-            -anchored_b,
-            **cg_options,
-        )
-        if int(info) != 0:
-            raise RuntimeError(f"GPU pressure solve did not converge, cg info={int(info)}")
 
-        pressure = cp.zeros(self.cell_type.shape, dtype=self.dtype)
-        pressure[self.fluid_mask] = pressure_vector[self.index_map[self.fluid_mask]]
-        pressure[self.fluid_mask] -= cp.mean(pressure[self.fluid_mask])
-        return pressure
+        if self.pressure_inverse is not None:
+            pressure_vector = self.pressure_inverse @ (-anchored_b)
+        else:
+            cg_options = {
+                self.cg_tolerance_name: self.pressure_tol,
+                "maxiter": self.pressure_maxiter,
+            }
+            pressure_vector, info = gpu_cg(
+                self.pressure_matrix,
+                -anchored_b,
+                **cg_options,
+            )
+            if int(info) != 0:
+                raise RuntimeError(f"GPU pressure solve did not converge, cg info={int(info)}")
+
+        self.pressure.fill(0.0)
+        self.pressure[self.fluid_mask] = pressure_vector[self.fluid_vector_indices]
+        self.pressure[self.fluid_mask] -= cp.mean(self.pressure[self.fluid_mask])
+        return self.pressure
 
     def _project_pressure(self):
         pressure_scale = self.dt / (self.density * self.h)
 
-        x_mask = (self.cell_type[:, 1:] != 0) & (self.cell_type[:, :-1] != 0)
         x_delta = pressure_scale * (self.pressure[:, 1:] - self.pressure[:, :-1])
         self.velocity_x[:, 1:self.n] = cp.where(
-            x_mask,
+            self.x_pressure_mask,
             self.velocity_x[:, 1:self.n] - x_delta,
             0.0,
         )
 
-        y_mask = (self.cell_type[1:, :] != 0) & (self.cell_type[:-1, :] != 0)
         y_delta = pressure_scale * (self.pressure[1:, :] - self.pressure[:-1, :])
         self.velocity_y[1:self.n, :] = cp.where(
-            y_mask,
+            self.y_pressure_mask,
             self.velocity_y[1:self.n, :] - y_delta,
             0.0,
         )

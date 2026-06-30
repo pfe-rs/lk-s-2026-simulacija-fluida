@@ -22,6 +22,12 @@ def parse_args():
     parser.add_argument("--pressure-tol", type=float, default=1e-4, help="GPU pressure solver tolerance.")
     parser.add_argument("--pressure-maxiter", type=int, default=0, help="0 means CuPy solver default.")
     parser.add_argument(
+        "--pressure-direct-limit",
+        type=int,
+        default=4096,
+        help="Use precomputed GPU dense inverse up to this unknown count. 0 disables it.",
+    )
+    parser.add_argument(
         "--preset",
         default="shear_layer",
         choices=sorted(set(PRESETS.values())),
@@ -119,6 +125,7 @@ def main():
         preset=args.preset,
         pressure_tol=args.pressure_tol,
         pressure_maxiter=args.pressure_maxiter or None,
+        pressure_direct_limit=args.pressure_direct_limit,
     )
 
     pygame.init()
