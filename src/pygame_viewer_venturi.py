@@ -1,5 +1,17 @@
 import argparse
+import os
 import time
+
+_cpu_threads = os.environ.get("FLUID_CPU_THREADS")
+if _cpu_threads:
+    for _name in (
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+    ):
+        os.environ.setdefault(_name, _cpu_threads)
 
 import numpy as np
 import cupy as cp
@@ -21,6 +33,30 @@ def parse_args():
         help="Initial velocity field.",
     )
     parser.add_argument("--substeps", type=int, default=1, help="Simulation steps per frame.")
+    parser.add_argument(
+        "--pressure-solver",
+        default="auto",
+        choices=["auto", "direct", "gpu_cg"],
+        help="Pressure solver. auto uses direct for small grids and GPU CG for high resolution.",
+    )
+    parser.add_argument(
+        "--pressure-iterations",
+        type=int,
+        default=80,
+        help="Maximum GPU CG iterations per pressure solve.",
+    )
+    parser.add_argument(
+        "--pressure-tolerance",
+        type=float,
+        default=1e-4,
+        help="GPU CG pressure solver tolerance.",
+    )
+    parser.add_argument(
+        "--metrics-every",
+        type=int,
+        default=10,
+        help="Calculate benchmark metrics every N frames. 0 disables them.",
+    )
     parser.add_argument("--size", type=int, default=768, help="Square simulation viewport size.")
     parser.add_argument(
         "--quiver-stride",
@@ -228,7 +264,11 @@ def main():
         dt=args.dt,
         h=args.h,
         viscosity=args.viscosity,
+        density=args.density,
         preset=args.preset,
+        pressure_solver=args.pressure_solver,
+        pressure_iterations=args.pressure_iterations,
+        pressure_tolerance=args.pressure_tolerance,
     )
 
     pygame.init()
@@ -265,6 +305,7 @@ def main():
         "walls_ms": 0.0,
         "total_ms": 0.0,
     }
+    last_metrics = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
     mouse_pressed_pos = None
     mouse_timer = 0
@@ -383,7 +424,8 @@ def main():
             simulation.velocity_x *= (args.damping / 100)
             simulation.velocity_y *= (args.damping / 100)
 
-            divergencija_metrika, vorticitet_metrika, curl, kinetic_energy, cfl, tacnost_L2, avg_tacnostL2 = simulation.metrics()
+            if args.metrics_every > 0 and simulation.frame % args.metrics_every == 0:
+                last_metrics = simulation.metrics()
 
         rgb_start = time.perf_counter()
         if view_mode == "curl":
@@ -421,9 +463,16 @@ def main():
         last_frame_time = now
 
         text_start = time.perf_counter()
-        v1 = simulation.velocity_x[simulation.n//2, simulation.n//6]
-        v2 = simulation.velocity_x[simulation.n//2, simulation.n//2]
-        v3 = simulation.velocity_x[simulation.n//2, 5 * simulation.n//6]
+        v1, v2, v3 = cp.asnumpy(
+            cp.asarray(
+                [
+                    simulation.velocity_x[simulation.n//2, simulation.n//6],
+                    simulation.velocity_x[simulation.n//2, simulation.n//2],
+                    simulation.velocity_x[simulation.n//2, 5 * simulation.n//6],
+                ]
+            )
+        )
+        divergencija_metrika, vorticitet_metrika, curl, kinetic_energy, cfl, tacnost_L2, avg_tacnostL2 = last_metrics
         status = "paused" if paused else "running"
         lines = [
             f"{simulation.preset} | frame {simulation.frame} | {status} | fps {fps:5.1f}",

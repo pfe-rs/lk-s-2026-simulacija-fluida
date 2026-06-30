@@ -1,9 +1,10 @@
 import numpy as np
 import cupy as cp
-from scipy.sparse.linalg import cg
 from time import perf_counter
-from scipy.sparse import lil_matrix, csr_matrix
+from scipy.sparse import lil_matrix
 from scipy.sparse.linalg import factorized
+from cupyx.scipy.sparse import csr_matrix as gpu_csr_matrix
+from cupyx.scipy.sparse.linalg import cg as gpu_cg
 import metrics
 
 PRESETS = {
@@ -26,6 +27,9 @@ class FluidSimulation:
         viscosity=0.08,
         density=1.0,
         preset="shear_layer",
+        pressure_solver="auto",
+        pressure_iterations=80,
+        pressure_tolerance=1e-4,
     ):
         self.n = n
         self.dt = dt
@@ -33,6 +37,9 @@ class FluidSimulation:
         self.viscosity = viscosity
         self.density = density
         self.preset = preset
+        self.pressure_solver_mode = pressure_solver
+        self.pressure_iterations = pressure_iterations
+        self.pressure_tolerance = pressure_tolerance
         self.frame = 0
 
         self.cell_type = cp.ones((n, n), dtype=int)
@@ -81,8 +88,16 @@ class FluidSimulation:
 
         self.index_map = self.IndexMap(self.cell_type)
         self.system_matrix = self._build_sparse_system_matrix(self.index_map)
-        self.pressure_solver = factorized(self._build_anchored_pressure_matrix())
+        self.anchored_system_matrix = self._build_anchored_pressure_matrix()
+        self.pressure_solver = None
+        self.gpu_system_matrix = gpu_csr_matrix(self.anchored_system_matrix)
         self.fluid_mask = self.index_map != -1
+        self.fluid_mask_gpu = cp.asarray(self.fluid_mask)
+        self.index_map_gpu = cp.asarray(self.index_map)
+        self.fluid_indices_gpu = self.index_map_gpu[self.fluid_mask_gpu]
+        self.unknown_count = int(np.max(self.index_map) + 1)
+        if self.pressure_solver_mode == "direct":
+            self.pressure_solver = factorized(self.anchored_system_matrix)
 
         self.velocity_x = cp.zeros((n, n + 1))
         self.velocity_y = cp.zeros((n + 1, n))
@@ -245,10 +260,10 @@ class FluidSimulation:
                     
         return matrica_a
     def vectorB(self, tip_celije, mapa_indexa, brzina_x, brzina_y, rho, dt, h):
-        tip_celije = cp.array(tip_celije)
-        
-        N = int(cp.max(mapa_indexa) + 1)
-        b = cp.zeros(N)
+        tip_celije = cp.asarray(tip_celije)
+        mapa_indexa = cp.asarray(mapa_indexa)
+
+        b = cp.zeros(self.unknown_count, dtype=brzina_x.dtype)
 
         u_levo = brzina_x[:, :-1].copy()
         u_desno = brzina_x[:, 1:].copy()
@@ -264,16 +279,6 @@ class FluidSimulation:
         fluid_mask = mapa_indexa != -1
         b[mapa_indexa[fluid_mask]] = (rho * h / dt) * divergencija[fluid_mask]
         return b
-
-    def IzracunajPritisak(self, matrica_a, b_vektor, mapa_indexa, tip_celije, tol = 1e-5):
-        
-        P_vektor, _ = cg(matrica_a, b_vektor, rtol=tol)
-
-        P_matrica = cp.zeros(tip_celije.shape)
-        fluid_mask = mapa_indexa != -1
-        P_matrica[fluid_mask] = P_vektor[mapa_indexa[fluid_mask].astype(int)]
-                    
-        return P_matrica
 
     def add_vortex(self, brzina_x, brzina_y, cx, cy, radius, strength, h):
 
@@ -539,17 +544,31 @@ class FluidSimulation:
     def _solve_pressure(self, b_vector):
         anchored_b = b_vector.copy()
         anchored_b[0] = 0.0
-        
-        anchored_b_cpu = anchored_b.get() 
-        
-        pressure_vector_cpu = self.pressure_solver(anchored_b_cpu) 
-        
 
-        pressure_vector = cp.asarray(pressure_vector_cpu)
+        solver_mode = self.pressure_solver_mode
+        if solver_mode == "auto":
+            solver_mode = "direct" if self.unknown_count <= 4096 else "gpu_cg"
+
+        if solver_mode == "direct":
+            if self.pressure_solver is None:
+                self.pressure_solver = factorized(self.anchored_system_matrix)
+            pressure_vector = cp.asarray(self.pressure_solver(anchored_b.get()))
+        elif solver_mode == "gpu_cg":
+            pressure_vector, info = gpu_cg(
+                self.gpu_system_matrix,
+                anchored_b,
+                x0=None,
+                tol=self.pressure_tolerance,
+                maxiter=self.pressure_iterations,
+            )
+            if info < 0:
+                raise RuntimeError(f"GPU pressure solver failed with info={info}")
+        else:
+            raise ValueError(f"Unknown pressure solver: {self.pressure_solver_mode}")
 
         pressure = cp.zeros(self.cell_type.shape)
-        pressure[self.fluid_mask] = pressure_vector[self.index_map[self.fluid_mask]]
-        pressure[self.fluid_mask] -= cp.mean(pressure[self.fluid_mask])
+        pressure[self.fluid_mask_gpu] = pressure_vector[self.fluid_indices_gpu]
+        pressure[self.fluid_mask_gpu] -= cp.mean(pressure[self.fluid_mask_gpu])
         return pressure
 
     def _project_pressure(self):
