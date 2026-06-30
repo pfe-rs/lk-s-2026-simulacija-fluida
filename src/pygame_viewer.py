@@ -19,6 +19,8 @@ def parse_args():
     parser.add_argument("--dt", type=float, default=0.01, help="Simulation time step.")
     parser.add_argument("--h", type=float, default=0.1, help="Cell size.")
     parser.add_argument("--viscosity", type=float, default=0.08, help="Fluid viscosity.")
+    parser.add_argument("--pressure-tol", type=float, default=1e-4, help="GPU pressure solver tolerance.")
+    parser.add_argument("--pressure-maxiter", type=int, default=0, help="0 means CuPy solver default.")
     parser.add_argument(
         "--preset",
         default="shear_layer",
@@ -36,6 +38,12 @@ def parse_args():
     parser.add_argument("--no-quiver", action="store_true", help="Hide velocity arrows.")
     parser.add_argument("--max-fps", type=int, default=0, help="0 means uncapped.")
     parser.add_argument("--frames", type=int, default=0, help="Quit after N frames. 0 means run forever.")
+    parser.add_argument(
+        "--profile-every",
+        type=int,
+        default=30,
+        help="Collect synchronized GPU timings every N simulation frames. 0 disables profiling.",
+    )
     parser.add_argument(
         "--stream-strength",
         type=float,
@@ -109,6 +117,8 @@ def main():
         h=args.h,
         viscosity=args.viscosity,
         preset=args.preset,
+        pressure_tol=args.pressure_tol,
+        pressure_maxiter=args.pressure_maxiter or None,
     )
 
     pygame.init()
@@ -142,6 +152,7 @@ def main():
         "walls_ms": 0.0,
         "total_ms": 0.0,
     }
+    profile_every = max(0, args.profile_every)
 
     while running:
         frame_start = time.perf_counter()
@@ -181,8 +192,11 @@ def main():
         timings["stream_ms"] = (time.perf_counter() - stream_start) * 1000.0
 
         if not paused:
-            last_step_timings = simulation.step(args.substeps, profile=True)
-            timings["sim_total_ms"] = last_step_timings["total_ms"]
+            should_profile = profile_every > 0 and simulation.frame % profile_every == 0
+            step_timings = simulation.step(args.substeps, profile=should_profile)
+            if step_timings is not None:
+                last_step_timings = step_timings
+                timings["sim_total_ms"] = last_step_timings["total_ms"]
 
         rgb_start = time.perf_counter()
         rgb = pressure_to_rgb(simulation.pressure, args.pressure_scale)
