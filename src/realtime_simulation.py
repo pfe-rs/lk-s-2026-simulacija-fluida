@@ -1,20 +1,9 @@
 import numpy as np
-from time import perf_counter
+import cupy as cp
+from cupyx.scipy import sparse as cp_sparse
+from cupyx.scipy.sparse.linalg import cg as gpu_cg
 from scipy.sparse import lil_matrix
-
-from essential_functions import (
-    IndexMap,
-    IzracunajPritisak,
-    Univerzalna_Advekcija,
-    Univerzalna_Difuzija,
-    add_vortex,
-    initialize_blob,
-    initialize_double_vortex,
-    initialize_four_vortices,
-    initialize_shear_layer,
-    initialize_single_vortex,
-    initialize_taylor_green,
-)
+from time import perf_counter
 
 
 PRESETS = {
@@ -30,12 +19,14 @@ PRESETS = {
 class FluidSimulation:
     def __init__(
         self,
-        n=32,
+        n=128,
         dt=0.01,
         h=0.1,
         viscosity=0.08,
         density=1.0,
         preset="shear_layer",
+        pressure_tol=1e-5,
+        pressure_maxiter=None,
     ):
         self.n = n
         self.dt = dt
@@ -43,38 +34,85 @@ class FluidSimulation:
         self.viscosity = viscosity
         self.density = density
         self.preset = preset
+        self.pressure_tol = pressure_tol
+        self.pressure_maxiter = pressure_maxiter
         self.frame = 0
 
-        self.cell_type = np.ones((n, n), dtype=int)
+        self.cell_type = cp.ones((n, n), dtype=cp.int32)
         self.cell_type[0, :] = 0
         self.cell_type[-1, :] = 0
         self.cell_type[:, 0] = 0
         self.cell_type[:, -1] = 0
+        self.cell_type_cpu = cp.asnumpy(self.cell_type)
 
-        self.index_map = IndexMap(self.cell_type)
-        self.system_matrix = self._build_sparse_system_matrix()
+        self.index_map_cpu = self._build_index_map(self.cell_type_cpu)
+        self.index_map = cp.asarray(self.index_map_cpu)
+        self.fluid_mask = self.index_map != -1
+        self.unknown_count = int(np.max(self.index_map_cpu) + 1)
+        self.pressure_matrix = self._build_gpu_pressure_matrix()
 
-        self.velocity_x = np.zeros((n, n + 1))
-        self.velocity_y = np.zeros((n + 1, n))
-        self.pressure = np.zeros((n, n))
+        self.velocity_x = cp.zeros((n, n + 1), dtype=cp.float64)
+        self.velocity_y = cp.zeros((n + 1, n), dtype=cp.float64)
+        self.pressure = cp.zeros((n, n), dtype=cp.float64)
+
         self.reset(preset)
+
+    def _sync_gpu(self):
+        cp.cuda.Stream.null.synchronize()
+
+    def _elapsed_ms(self, start):
+        self._sync_gpu()
+        return (perf_counter() - start) * 1000.0
+
+    def _build_index_map(self, cell_type):
+        index_map = -np.ones(cell_type.shape, dtype=np.int32)
+        fluid_mask = (cell_type != 0) & (cell_type != 2)
+        index_map[fluid_mask] = np.arange(np.count_nonzero(fluid_mask), dtype=np.int32)
+        return index_map
+
+    def _build_gpu_pressure_matrix(self):
+        matrix = lil_matrix((self.unknown_count, self.unknown_count), dtype=np.float64)
+        rows, columns = self.index_map_cpu.shape
+
+        for i in range(rows):
+            for j in range(columns):
+                row_index = int(self.index_map_cpu[i, j])
+                if row_index == -1:
+                    continue
+
+                neighbor_count = 0
+                for ni, nj in ((i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1)):
+                    if self.cell_type_cpu[ni, nj] == 1:
+                        neighbor_count += 1
+                        matrix[row_index, int(self.index_map_cpu[ni, nj])] = 1.0
+                    elif self.cell_type_cpu[ni, nj] == 2:
+                        neighbor_count += 1
+
+                matrix[row_index, row_index] = -float(neighbor_count)
+
+        anchored = matrix.tolil()
+        anchored[0, :] = 0.0
+        anchored[:, 0] = 0.0
+        anchored[0, 0] = -1.0
+
+        return -cp_sparse.csr_matrix(anchored.tocsr())
 
     def reset(self, preset=None):
         if preset is not None:
             self.preset = preset
 
         if self.preset == "single_vortex":
-            initialize_single_vortex(self.velocity_x, self.velocity_y, self.n, self.h)
+            self.initialize_single_vortex()
         elif self.preset == "double_vortex":
-            initialize_double_vortex(self.velocity_x, self.velocity_y, self.n, self.h)
+            self.initialize_double_vortex()
         elif self.preset == "four_vortices":
-            initialize_four_vortices(self.velocity_x, self.velocity_y, self.n, self.h)
+            self.initialize_four_vortices()
         elif self.preset == "shear_layer":
-            initialize_shear_layer(self.velocity_x, self.velocity_y, 8, self.n)
+            self.initialize_shear_layer(8.0)
         elif self.preset == "taylor_green":
-            initialize_taylor_green(self.velocity_x, self.velocity_y, self.n, self.h)
+            self.initialize_taylor_green()
         elif self.preset == "blob":
-            initialize_blob(self.velocity_x, self.velocity_y, self.n)
+            self.initialize_blob()
         else:
             raise ValueError(f"Unknown preset: {self.preset}")
 
@@ -91,67 +129,38 @@ class FluidSimulation:
             "walls_ms": 0.0,
             "total_ms": 0.0,
         }
+        self._sync_gpu()
         total_start = perf_counter()
 
         for _ in range(substeps):
             step_start = perf_counter()
             b_vector = self._pressure_rhs()
-            timings["rhs_ms"] += (perf_counter() - step_start) * 1000.0
+            timings["rhs_ms"] += self._elapsed_ms(step_start)
 
             step_start = perf_counter()
-            self.pressure = IzracunajPritisak(
-                self.system_matrix,
-                b_vector,
-                self.index_map,
-                self.cell_type,
-                tol=1e-5,
-            )
-            timings["pressure_ms"] += (perf_counter() - step_start) * 1000.0
+            self.pressure = self._solve_pressure(b_vector)
+            timings["pressure_ms"] += self._elapsed_ms(step_start)
 
             step_start = perf_counter()
             self._project_pressure()
-            timings["projection_ms"] += (perf_counter() - step_start) * 1000.0
+            timings["projection_ms"] += self._elapsed_ms(step_start)
 
             step_start = perf_counter()
-            advected_x = Univerzalna_Advekcija(
-                self.velocity_x,
-                self.velocity_x,
-                self.velocity_y,
-                "x_ivica",
-                self.dt,
-                self.h,
-            )
-            advected_y = Univerzalna_Advekcija(
-                self.velocity_y,
-                self.velocity_x,
-                self.velocity_y,
-                "y_ivica",
-                self.dt,
-                self.h,
-            )
-            timings["advection_ms"] += (perf_counter() - step_start) * 1000.0
+            advected_x = self._advect(self.velocity_x, self.velocity_x, self.velocity_y, "x_edge")
+            advected_y = self._advect(self.velocity_y, self.velocity_x, self.velocity_y, "y_edge")
+            timings["advection_ms"] += self._elapsed_ms(step_start)
 
             step_start = perf_counter()
-            self.velocity_x = Univerzalna_Difuzija(
-                advected_x,
-                self.viscosity,
-                self.dt,
-                self.h,
-            )
-            self.velocity_y = Univerzalna_Difuzija(
-                advected_y,
-                self.viscosity,
-                self.dt,
-                self.h,
-            )
-            timings["diffusion_ms"] += (perf_counter() - step_start) * 1000.0
+            self.velocity_x = self._diffuse(advected_x)
+            self.velocity_y = self._diffuse(advected_y)
+            timings["diffusion_ms"] += self._elapsed_ms(step_start)
 
             step_start = perf_counter()
             self._enforce_walls()
-            timings["walls_ms"] += (perf_counter() - step_start) * 1000.0
+            timings["walls_ms"] += self._elapsed_ms(step_start)
             self.frame += 1
 
-        timings["total_ms"] = (perf_counter() - total_start) * 1000.0
+        timings["total_ms"] = self._elapsed_ms(total_start)
         if substeps > 1:
             for key in timings:
                 timings[key] /= substeps
@@ -160,88 +169,127 @@ class FluidSimulation:
             return timings
         return None
 
-    def _build_sparse_system_matrix(self):
-        unknown_count = int(np.max(self.index_map) + 1)
-        matrix = lil_matrix((unknown_count, unknown_count), dtype=float)
-
-        rows, columns = self.index_map.shape
-        for i in range(rows):
-            for j in range(columns):
-                row_index = int(self.index_map[i, j])
-                if row_index == -1:
-                    continue
-
-                neighbor_count = 0
-                for ni, nj in ((i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1)):
-                    if self.cell_type[ni, nj] == 1:
-                        neighbor_count += 1
-                        matrix[row_index, int(self.index_map[ni, nj])] = 1.0
-                    elif self.cell_type[ni, nj] == 2:
-                        neighbor_count += 1
-
-                matrix[row_index, row_index] = -neighbor_count
-
-        return matrix.tocsr()
-
     def _pressure_rhs(self):
-        unknown_count = int(np.max(self.index_map) + 1)
-        b_vector = np.zeros(unknown_count)
+        b = cp.zeros(self.unknown_count, dtype=cp.float64)
 
-        rows, columns = self.index_map.shape
-        for i in range(rows):
-            for j in range(columns):
-                index = int(self.index_map[i, j])
-                if index == -1:
-                    continue
+        u_left = self.velocity_x[:, :-1].copy()
+        u_right = self.velocity_x[:, 1:].copy()
+        v_top = self.velocity_y[:-1, :].copy()
+        v_bottom = self.velocity_y[1:, :].copy()
 
-                u_left = self.velocity_x[i, j]
-                u_right = self.velocity_x[i, j + 1]
-                v_top = self.velocity_y[i, j]
-                v_bottom = self.velocity_y[i + 1, j]
+        u_left[:, 1:] = cp.where(self.cell_type[:, :-1] == 0, 0.0, u_left[:, 1:])
+        u_right[:, :-1] = cp.where(self.cell_type[:, 1:] == 0, 0.0, u_right[:, :-1])
+        v_top[1:, :] = cp.where(self.cell_type[:-1, :] == 0, 0.0, v_top[1:, :])
+        v_bottom[:-1, :] = cp.where(self.cell_type[1:, :] == 0, 0.0, v_bottom[:-1, :])
 
-                if self.cell_type[i, j - 1] == 0:
-                    u_left = 0.0
-                if self.cell_type[i, j + 1] == 0:
-                    u_right = 0.0
-                if self.cell_type[i - 1, j] == 0:
-                    v_top = 0.0
-                if self.cell_type[i + 1, j] == 0:
-                    v_bottom = 0.0
+        divergence = (u_right - u_left) + (v_bottom - v_top)
+        b[self.index_map[self.fluid_mask]] = (self.density * self.h / self.dt) * divergence[
+            self.fluid_mask
+        ]
+        return b
 
-                divergence = (u_right - u_left) + (v_bottom - v_top)
-                b_vector[index] = (self.density * self.h / self.dt) * divergence
+    def _solve_pressure(self, b_vector):
+        anchored_b = b_vector.copy()
+        anchored_b[0] = 0.0
+        pressure_vector, info = gpu_cg(
+            self.pressure_matrix,
+            -anchored_b,
+            tol=self.pressure_tol,
+            maxiter=self.pressure_maxiter,
+        )
+        if int(info) != 0:
+            raise RuntimeError(f"GPU pressure solve did not converge, cg info={int(info)}")
 
-        return b_vector
+        pressure = cp.zeros(self.cell_type.shape, dtype=cp.float64)
+        pressure[self.fluid_mask] = pressure_vector[self.index_map[self.fluid_mask]]
+        pressure[self.fluid_mask] -= cp.mean(pressure[self.fluid_mask])
+        return pressure
 
     def _project_pressure(self):
-        for i in range(self.n):
-            for j in range(1, self.n):
-                if self.cell_type[i, j] != 0 and self.cell_type[i, j - 1] != 0:
-                    self.velocity_x[i, j] -= (
-                        self.dt
-                        / (self.density * self.h)
-                        * (self.pressure[i, j] - self.pressure[i, j - 1])
-                    )
-                else:
-                    self.velocity_x[i, j] = 0.0
+        pressure_scale = self.dt / (self.density * self.h)
 
-        for i in range(1, self.n):
-            for j in range(self.n):
-                if self.cell_type[i, j] != 0 and self.cell_type[i - 1, j] != 0:
-                    self.velocity_y[i, j] -= (
-                        self.dt
-                        / (self.density * self.h)
-                        * (self.pressure[i, j] - self.pressure[i - 1, j])
-                    )
-                else:
-                    self.velocity_y[i, j] = 0.0
+        x_mask = (self.cell_type[:, 1:] != 0) & (self.cell_type[:, :-1] != 0)
+        x_delta = pressure_scale * (self.pressure[:, 1:] - self.pressure[:, :-1])
+        self.velocity_x[:, 1:self.n] = cp.where(
+            x_mask,
+            self.velocity_x[:, 1:self.n] - x_delta,
+            0.0,
+        )
+
+        y_mask = (self.cell_type[1:, :] != 0) & (self.cell_type[:-1, :] != 0)
+        y_delta = pressure_scale * (self.pressure[1:, :] - self.pressure[:-1, :])
+        self.velocity_y[1:self.n, :] = cp.where(
+            y_mask,
+            self.velocity_y[1:self.n, :] - y_delta,
+            0.0,
+        )
+
+    def _advect(self, field, velocity_x, velocity_y, position_type):
+        rows, columns = field.shape
+        i_grid, j_grid = cp.indices(field.shape)
+
+        if position_type == "x_edge":
+            u_wind = field
+            i_top = cp.clip(i_grid - 1, 0, velocity_y.shape[0] - 1)
+            i_bot = cp.clip(i_grid, 0, velocity_y.shape[0] - 1)
+            j_left = cp.clip(j_grid - 1, 0, velocity_y.shape[1] - 1)
+            j_right = cp.clip(j_grid, 0, velocity_y.shape[1] - 1)
+            v_wind = (
+                velocity_y[i_top, j_left]
+                + velocity_y[i_bot, j_left]
+                + velocity_y[i_top, j_right]
+                + velocity_y[i_bot, j_right]
+            ) / 4.0
+        elif position_type == "y_edge":
+            v_wind = field
+            i_top = cp.clip(i_grid - 1, 0, velocity_x.shape[0] - 1)
+            i_bot = cp.clip(i_grid, 0, velocity_x.shape[0] - 1)
+            j_left = cp.clip(j_grid - 1, 0, velocity_x.shape[1] - 1)
+            j_right = cp.clip(j_grid, 0, velocity_x.shape[1] - 1)
+            u_wind = (
+                velocity_x[i_top, j_left]
+                + velocity_x[i_bot, j_left]
+                + velocity_x[i_top, j_right]
+                + velocity_x[i_bot, j_right]
+            ) / 4.0
+        else:
+            raise ValueError(f"Unknown position type: {position_type}")
+
+        i_old = cp.clip(i_grid - (v_wind * self.dt / self.h), 0.0, float(rows - 1))
+        j_old = cp.clip(j_grid - (u_wind * self.dt / self.h), 0.0, float(columns - 1))
+
+        i0 = cp.floor(i_old).astype(cp.int32)
+        j0 = cp.floor(j_old).astype(cp.int32)
+        i1 = cp.minimum(rows - 1, i0 + 1)
+        j1 = cp.minimum(columns - 1, j0 + 1)
+
+        beta = i_old - i0
+        alpha = j_old - j0
+
+        return (
+            field[i0, j0] * (1 - alpha) * (1 - beta)
+            + field[i0, j1] * alpha * (1 - beta)
+            + field[i1, j0] * (1 - alpha) * beta
+            + field[i1, j1] * alpha * beta
+        )
+
+    def _diffuse(self, field):
+        new_field = cp.copy(field)
+        laplacian = (
+            field[:-2, 1:-1]
+            + field[2:, 1:-1]
+            + field[1:-1, :-2]
+            + field[1:-1, 2:]
+            - 4.0 * field[1:-1, 1:-1]
+        ) / (self.h**2)
+        new_field[1:-1, 1:-1] = field[1:-1, 1:-1] + self.viscosity * self.dt * laplacian
+        return new_field
 
     def _enforce_walls(self):
         self.velocity_x[:, 0] = 0.0
         self.velocity_x[:, -1] = 0.0
         self.velocity_x[0, :] = 0.0
         self.velocity_x[-1, :] = 0.0
-
         self.velocity_y[0, :] = 0.0
         self.velocity_y[-1, :] = 0.0
         self.velocity_y[:, 0] = 0.0
@@ -250,7 +298,84 @@ class FluidSimulation:
     def add_vortex_at_cell(self, x_cell, y_cell, radius=0.5, strength=24.0):
         cx = float(np.clip(x_cell, 1, self.n - 2)) * self.h
         cy = float(np.clip(y_cell, 1, self.n - 2)) * self.h
-        add_vortex(self.velocity_x, self.velocity_y, cx, cy, radius, strength, self.h)
+        self._add_vortex(cx, cy, radius, strength)
+
+    def _add_vortex(self, cx, cy, radius, strength):
+        eps = 1e-8
+
+        i_x, j_x = cp.indices(self.velocity_x.shape)
+        dx = j_x * self.h - cx
+        dy = (i_x + 0.5) * self.h - cy
+        r = cp.sqrt(dx * dx + dy * dy)
+        mask = r < radius
+        factor = cp.zeros_like(self.velocity_x)
+        factor[mask] = (1.0 - cp.exp(-(r[mask] / radius) ** 2)) / (r[mask] + eps)
+        self.velocity_x[mask] += -strength * dy[mask] * factor[mask]
+
+        i_y, j_y = cp.indices(self.velocity_y.shape)
+        dx = (j_y + 0.5) * self.h - cx
+        dy = i_y * self.h - cy
+        r = cp.sqrt(dx * dx + dy * dy)
+        mask = r < radius
+        factor = cp.zeros_like(self.velocity_y)
+        factor[mask] = (1.0 - cp.exp(-(r[mask] / radius) ** 2)) / (r[mask] + eps)
+        self.velocity_y[mask] += strength * dx[mask] * factor[mask]
+
+    def initialize_blob(self):
+        self.velocity_x.fill(0.0)
+        self.velocity_y.fill(0.0)
+
+        center_i = self.n // 2
+        center_j = self.n // 4
+        radius = 5
+        i_x, j_x = cp.indices(self.velocity_x.shape)
+        self.velocity_x[(i_x - center_i) ** 2 + (j_x - center_j) ** 2 < radius**2] = 10.0
+        i_y, j_y = cp.indices(self.velocity_y.shape)
+        self.velocity_y[(i_y - center_i) ** 2 + (j_y - center_j) ** 2 < radius**2] = 10.0
+
+    def initialize_single_vortex(self):
+        self.velocity_x.fill(0.0)
+        self.velocity_y.fill(0.0)
+        self._add_vortex(self.n * self.h * 0.5, self.n * self.h * 0.5, 0.8, 40.0)
+
+    def initialize_double_vortex(self):
+        self.velocity_x.fill(0.0)
+        self.velocity_y.fill(0.0)
+        self._add_vortex(self.n * self.h * 0.30, self.n * self.h * 0.50, 0.6, 40.0)
+        self._add_vortex(self.n * self.h * 0.70, self.n * self.h * 0.50, 0.6, -40.0)
+
+    def initialize_four_vortices(self):
+        self.velocity_x.fill(0.0)
+        self.velocity_y.fill(0.0)
+        for px, py, strength in (
+            (0.30, 0.30, 40.0),
+            (0.70, 0.30, -40.0),
+            (0.30, 0.70, -40.0),
+            (0.70, 0.70, 40.0),
+        ):
+            self._add_vortex(self.n * self.h * px, self.n * self.h * py, 0.45, strength)
+
+    def initialize_shear_layer(self, strength):
+        self.velocity_x.fill(0.0)
+        self.velocity_y.fill(0.0)
+        self.velocity_x[: self.n // 2, :] = strength
+        self.velocity_x[self.n // 2 :, :] = -strength
+
+    def initialize_taylor_green(self):
+        self.velocity_x.fill(0.0)
+        self.velocity_y.fill(0.0)
+
+        u0 = 20.0
+        length = self.n * self.h
+        i_x, j_x = cp.indices(self.velocity_x.shape)
+        x = j_x * self.h
+        y = (i_x + 0.5) * self.h
+        self.velocity_x[:, :] = u0 * cp.sin(2 * cp.pi * x / length) * cp.cos(2 * cp.pi * y / length)
+
+        i_y, j_y = cp.indices(self.velocity_y.shape)
+        x = (j_y + 0.5) * self.h
+        y = i_y * self.h
+        self.velocity_y[:, :] = -u0 * cp.cos(2 * cp.pi * x / length) * cp.sin(2 * cp.pi * y / length)
 
     def centered_velocity(self):
         u_center = (self.velocity_x[:, :-1] + self.velocity_x[:, 1:]) / 2.0
@@ -259,7 +384,7 @@ class FluidSimulation:
 
     def speed(self):
         u_center, v_center = self.centered_velocity()
-        return np.sqrt(u_center**2 + v_center**2)
+        return cp.sqrt(u_center**2 + v_center**2)
 
     def metrics(self):
         divergence = (
@@ -279,4 +404,7 @@ class FluidSimulation:
             / self.h
         )
 
-        return float(np.sum(np.abs(divergence))), float(np.sum(np.abs(vorticity)))
+        return (
+            float(cp.asnumpy(cp.sum(cp.abs(divergence)))),
+            float(cp.asnumpy(cp.sum(cp.abs(vorticity)))),
+        )
