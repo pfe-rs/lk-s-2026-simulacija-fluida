@@ -79,6 +79,11 @@ class FluidSimulation:
         self.cell_type[:y_gore_usko, -1] = 0
         self.cell_type[y_dole_usko:, -1] = 0
 
+        self.inlet_speed = 10.0
+        self.cell_type = cp.zeros((n, n), dtype=int)
+        self._carve_venturi_duct()
+        self._build_velocity_boundary_masks()
+
         self.index_map = self.IndexMap(self.cell_type)
         self.system_matrix = self._build_sparse_system_matrix(self.index_map)
         self.pressure_solver = factorized(self._build_anchored_pressure_matrix())
@@ -95,6 +100,40 @@ class FluidSimulation:
         self.mouse_timer = 0
 
         self.reset(preset)
+
+    def _carve_venturi_duct(self):
+        x1 = self.n // 3
+        x2 = 2 * self.n // 3
+
+        y_top_wide = self.n // 4
+        y_bottom_wide = 3 * self.n // 4
+        y_top_narrow = int(self.n // 2.2)
+        y_bottom_narrow = int(self.n // 1.8)
+
+        self.cell_type[y_top_wide:y_bottom_wide, :x1] = 1
+        self.cell_type[y_top_narrow:y_bottom_narrow, x2:] = 1
+
+        dx = max(1, x2 - x1)
+        for x in range(x1, x2 + 1):
+            t = x - x1
+            y_top = y_top_wide + t * (y_top_narrow - y_top_wide) // dx
+            y_bottom = y_bottom_wide + t * (y_bottom_narrow - y_bottom_wide) // dx
+            self.cell_type[y_top:y_bottom, x] = 1
+
+    def _build_velocity_boundary_masks(self):
+        self.velocity_x_fluid_mask = cp.zeros((self.n, self.n + 1), dtype=bool)
+        self.velocity_x_fluid_mask[:, 1:self.n] = (
+            (self.cell_type[:, :-1] == 1) & (self.cell_type[:, 1:] == 1)
+        )
+        self.inlet_mask = self.cell_type[:, 0] == 1
+        self.outlet_mask = self.cell_type[:, -1] == 1
+        self.velocity_x_fluid_mask[self.inlet_mask, 0] = True
+        self.velocity_x_fluid_mask[self.outlet_mask, -1] = True
+
+        self.velocity_y_fluid_mask = cp.zeros((self.n + 1, self.n), dtype=bool)
+        self.velocity_y_fluid_mask[1:self.n, :] = (
+            (self.cell_type[:-1, :] == 1) & (self.cell_type[1:, :] == 1)
+        )
 
     def Univerzalna_Advekcija(self, polje, brzina_x, brzina_y, tip_pozicije, dt=0.05, h=0.1):
         redova, kolone = polje.shape
@@ -418,6 +457,8 @@ class FluidSimulation:
         else:
             raise ValueError(f"Unknown preset: {self.preset}")
 
+        self._enforce_walls()
+
         self.total_accuracy_sum = 0.0
         self.accuracy_frame_count = 0
 
@@ -567,11 +608,9 @@ class FluidSimulation:
             0.0
         )
 
-        brzina_uliva = 10.0
-
         ulazni_vrat = (self.cell_type[:, 0] == 1)
-        self.velocity_x[ulazni_vrat, 0] = brzina_uliva
-        self.velocity_x[ulazni_vrat, 1] = brzina_uliva
+        self.velocity_x[ulazni_vrat, 0] = self.inlet_speed
+        self.velocity_x[ulazni_vrat, 1] = self.inlet_speed
 
         y_mask = (self.cell_type[:-1, :] != 0) & (self.cell_type[1:, :] != 0)
         
@@ -585,31 +624,16 @@ class FluidSimulation:
         )
 
     def _enforce_walls(self):
-        #self.velocity_x[:, 0] = 0.0
-        #self.velocity_x[:, -1] = 0.0
-        #self.velocity_x[0, :] = 0.0
-        #self.velocity_x[-1, :] = 0.0
-
-        #self.velocity_y[0, :] = 0.0
-        #self.velocity_y[-1, :] = 0.0
-        #self.velocity_y[:, 0] = 0.0
-        #self.velocity_y[:, -1] = 0.0
+        self.velocity_x = cp.where(self.velocity_x_fluid_mask, self.velocity_x, 0.0)
+        self.velocity_y = cp.where(self.velocity_y_fluid_mask, self.velocity_y, 0.0)
 
         ulazni_vrat = (self.cell_type[:, 0] == 1) 
-        
-
-        self.velocity_x[ulazni_vrat, 0] = 10.0
-        self.velocity_x[ulazni_vrat, 1] = 10.0
-        
-        self.velocity_y[:, 0] = 0.0
-
+        self.velocity_x[ulazni_vrat, 0] = self.inlet_speed
+        self.velocity_x[ulazni_vrat, 1] = self.inlet_speed
 
         izlazni_vrat = (self.cell_type[:, -1] == 1) 
-        
         self.velocity_x[izlazni_vrat, -1] = self.velocity_x[izlazni_vrat, -2]
         self.velocity_x[izlazni_vrat, -1] = cp.maximum(self.velocity_x[izlazni_vrat, -1], 0.0)
-        
-        self.velocity_y[:, -1] = self.velocity_y[:, -2]
 
         if self.preset == "lid_driven_cavity":
             U0 = 0.0  
