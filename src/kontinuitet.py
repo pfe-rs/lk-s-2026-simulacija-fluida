@@ -79,13 +79,14 @@ class FluidSimulation:
         self.cell_type[:y_gore_usko, -1] = 0
         self.cell_type[y_dole_usko:, -1] = 0
 
-        self.inlet_speed = 100.0
+        self.inlet_speed = 10.0
         self.cell_type = cp.zeros((n, n), dtype=int)
         self._carve_venturi_duct()
         self._build_velocity_boundary_masks()
 
         self.index_map = self.IndexMap(self.cell_type)
         self.system_matrix = self._build_sparse_system_matrix(self.index_map)
+        self.pressure_dirichlet_indices = self._pressure_dirichlet_indices()
         self.pressure_solver = factorized(self._build_anchored_pressure_matrix())
         self.fluid_mask = self.index_map != -1
 
@@ -134,6 +135,13 @@ class FluidSimulation:
         self.velocity_y_fluid_mask[1:self.n, :] = (
             (self.cell_type[:-1, :] == 1) & (self.cell_type[1:, :] == 1)
         )
+
+    def _pressure_dirichlet_indices(self):
+        outlet_indices = self.index_map[self.cell_type.get()[:, -1] == 1, -1]
+        outlet_indices = outlet_indices[outlet_indices != -1]
+        if outlet_indices.size > 0:
+            return outlet_indices.astype(int)
+        return np.array([0], dtype=int)
 
     def Univerzalna_Advekcija(self, polje, brzina_x, brzina_y, tip_pozicije, dt=0.05, h=0.1):
         redova, kolone = polje.shape
@@ -573,13 +581,14 @@ class FluidSimulation:
     
     def _build_anchored_pressure_matrix(self):
         anchored = self.system_matrix.tolil(copy=True)
-        anchored[0, :] = 0.0
-        anchored[0, 0] = 1.0
+        for index in self.pressure_dirichlet_indices:
+            anchored[index, :] = 0.0
+            anchored[index, index] = 1.0
         return anchored.tocsc()
 
     def _solve_pressure(self, b_vector):
         anchored_b = b_vector.copy()
-        anchored_b[0] = 0.0
+        anchored_b[self.pressure_dirichlet_indices] = 0.0
         
         anchored_b_cpu = anchored_b.get() 
         
