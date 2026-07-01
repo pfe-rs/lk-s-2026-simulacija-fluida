@@ -20,6 +20,12 @@ def parse_args():
         choices=sorted(set(PRESETS.values())),
         help="Initial velocity field.",
     )
+    parser.add_argument(
+        "--geometry",
+        default="venturi",
+        choices=["venturi", "flat"],
+        help="Duct geometry.",
+    )
     parser.add_argument("--substeps", type=int, default=1, help="Simulation steps per frame.")
     parser.add_argument("--size", type=int, default=768, help="Square simulation viewport size.")
     parser.add_argument(
@@ -229,6 +235,7 @@ def main():
         h=args.h,
         viscosity=args.viscosity,
         preset=args.preset,
+        geometry=args.geometry,
     )
 
     pygame.init()
@@ -437,7 +444,7 @@ def main():
         v3 = simulation.velocity_x[simulation.n//2, 5 * simulation.n//6]
         status = "paused" if paused else "running"
         lines = [
-            f"{simulation.preset} | frame {simulation.frame} | {status} | fps {fps:5.1f}",
+            f"{simulation.geometry} | {simulation.preset} | frame {simulation.frame} | {status} | fps {fps:5.1f}",
             "simulation timing (ms)",
             f"rhs        {last_step_timings['rhs_ms']:6.2f}",
             f"pressure   {last_step_timings['pressure_ms']:6.2f}",
@@ -483,7 +490,7 @@ def main():
             draw_text_lines(screen, small_font, help_lines, 10, args.size - 32)
             timings["text_ms"] = (time.perf_counter() - text_start) * 1000.0
         else :
-            lines_small = [ f"{simulation.preset} | {status} | fps {fps:5.1f}", 
+            lines_small = [ f"{simulation.geometry} | {simulation.preset} | {status} | fps {fps:5.1f}", 
                             f"L2-div {tacnost_L2:.2f}", f"L2-div-abf {avg_tacnostL2:.2f}",
                             f"v3/v1 {v3_v1}",
                             f"dp {p_delta:.2f}",

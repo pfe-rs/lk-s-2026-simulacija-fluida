@@ -26,6 +26,7 @@ class FluidSimulation:
         viscosity=0.08,
         density=1.0,
         preset="shear_layer",
+        geometry="venturi",
     ):
         self.n = n
         self.dt = dt
@@ -33,6 +34,7 @@ class FluidSimulation:
         self.viscosity = viscosity
         self.density = density
         self.preset = preset
+        self.geometry = geometry
         self.frame = 0
 
         self.cell_type = cp.ones((n, n), dtype=int)
@@ -81,7 +83,7 @@ class FluidSimulation:
 
         self.inlet_speed = 10.0
         self.cell_type = cp.zeros((n, n), dtype=int)
-        self._carve_venturi_duct()
+        self._carve_duct()
         self._build_velocity_boundary_masks()
 
         self.index_map = self.IndexMap(self.cell_type)
@@ -102,9 +104,17 @@ class FluidSimulation:
 
         self.reset(preset)
 
+    def _carve_duct(self):
+        if self.geometry == "venturi":
+            self._carve_venturi_duct()
+        elif self.geometry == "flat":
+            self._carve_flat_duct()
+        else:
+            raise ValueError(f"Unknown duct geometry: {self.geometry}")
+
     def _carve_venturi_duct(self):
         x1 = self.n // 5
-        x2 = 4 * self.n // 5
+        x2 = 7 * self.n // 10
         self.wide_sample_column = max(0, x1 // 2)
         self.narrow_sample_column = min(self.n - 1, x2 + max(1, self.n - x2) // 2)
 
@@ -126,6 +136,17 @@ class FluidSimulation:
             y_top = y_top_wide + (t * (y_top_narrow - y_top_wide) + dx // 2) // dx
             y_bottom = self.n - y_top
             self.cell_type[y_top:y_bottom, x] = 1
+
+    def _carve_flat_duct(self):
+        wide_half_width = self.n // 4
+        center = self.n // 2
+
+        y_top = center - wide_half_width
+        y_bottom = self.n - y_top
+        self.cell_type[y_top:y_bottom, :] = 1
+
+        self.wide_sample_column = self.n // 4
+        self.narrow_sample_column = 3 * self.n // 4
 
     def _build_velocity_boundary_masks(self):
         self.velocity_x_fluid_mask = cp.zeros((self.n, self.n + 1), dtype=bool)
