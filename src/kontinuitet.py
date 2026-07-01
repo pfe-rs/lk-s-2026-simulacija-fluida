@@ -103,8 +103,10 @@ class FluidSimulation:
         self.reset(preset)
 
     def _carve_venturi_duct(self):
-        x1 = self.n // 3
-        x2 = 2 * self.n // 3
+        x1 = self.n // 5
+        x2 = 4 * self.n // 5
+        self.wide_sample_column = max(0, x1 // 2)
+        self.narrow_sample_column = min(self.n - 1, x2 + max(1, self.n - x2) // 2)
 
         wide_half_width = self.n // 4
         narrow_half_width = max(2, self.n // 16)
@@ -685,8 +687,8 @@ class FluidSimulation:
         return float(cp.mean(self.pressure[fluid_rows, column]).get())
 
     def pressure_samples(self):
-        p_wide = self.mean_pressure_at_column(self.n // 6)
-        p_narrow = self.mean_pressure_at_column(self.n // 2)
+        p_wide = self.mean_pressure_at_column(self.wide_sample_column)
+        p_narrow = self.mean_pressure_at_column(self.narrow_sample_column)
         return p_wide, p_narrow, p_wide - p_narrow
 
     def curl_field(self):
