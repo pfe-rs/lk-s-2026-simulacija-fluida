@@ -81,7 +81,7 @@ class FluidSimulation:
         self.cell_type[:y_gore_usko, -1] = 0
         self.cell_type[y_dole_usko:, -1] = 0
 
-        self.inlet_speed = 10.0
+        self.inlet_speed = 2.0
         self.cell_type = cp.zeros((n, n), dtype=int)
         self._carve_duct()
         self._build_velocity_boundary_masks()
@@ -566,6 +566,9 @@ class FluidSimulation:
                 self.dt,
                 self.h,
             )
+
+
+
             timings["diffusion_ms"] += (perf_counter() - step_start) * 1000.0
 
             step_start = perf_counter()

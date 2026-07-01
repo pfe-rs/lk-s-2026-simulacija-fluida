@@ -7,6 +7,47 @@ import pygame
 
 from kontinuitet import FluidSimulation, PRESETS
 
+class Slider:
+    def __init__(self, x, y, w, min_val, max_val, label):
+        self.x = x
+        self.y = y
+        self.w = w
+        self.min_val = min_val
+        self.max_val = max_val
+        self.label = label
+
+        self.dragging = False
+
+    def handle_event(self, event):
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            mx, my = event.pos()
+            if self.x <= mx <= self.x + self.w and self.y - 10 <= my <= self.y + 10:
+                self.dragging = True
+                self.set_from_mouse(mx) 
+        elif event.type == pygame.MOUSEBUTTONUP:
+            self.dragging = False
+        elif event.type == pygame.MOUSEMOTION and self.draggin == True:
+            mx, _ = event.pos()
+            self.set_from_mouse(mx)
+        def set_from_mouse(self, mx):
+            t = (mx - self.x) / self.w
+            t = max(0.0, min(1.0, t))
+            self.value = self.min_val + t * (self.max_val - self.min_val)
+        def draw(self, screen, font):
+            pygame.draw.line(
+                screen,
+                (180,180,180),
+                (self.x, self.y),
+                (self.x + self.w, self.y),
+                3
+            )
+            t = (self.value - self.min_val) / (self.max_val - self.min_val)
+            knob_x = int(self.x + t * self.w)
+            pygame.draw.circle(screen, (240,240,240), (knob_x, self.y), 8)
+            pygame.draw.circle(screen, (40,40,40), (knob_x, self.y), 8, 2)
+            text = font.render(f"{self.label} : {self.value:.3f}", True, (255,255,255))
+            screen.blit(text, (self.x, self.y - 35))
+            
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Fast Pygame viewer for the fluid simulation.")
@@ -225,9 +266,14 @@ def main():
         preset=args.preset,
     )
 
+    #dodajemo i window za slajdere da se ne brkaju sa simuacijom
+    PANEL_WIDTH = 260
+    WINDOWS_WIDTH = args.size + PANEL_WIDTH
+    WINDOWS_HEIGHT = args.size
+
     pygame.init()
     pygame.display.set_caption("Real-time Fluid Simulation - Pygame")
-    screen = pygame.display.set_mode((args.size, args.size))
+    screen = pygame.display.set_mode((WINDOWS_WIDTH, WINDOWS_HEIGHT))
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("consolas", 15)
     small_font = pygame.font.SysFont("consolas", 13)

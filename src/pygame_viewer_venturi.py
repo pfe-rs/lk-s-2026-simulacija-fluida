@@ -2,13 +2,56 @@ import argparse
 import csv
 from pathlib import Path
 import time
-
 import numpy as np
 import cupy as cp
 import pygame
 
 from kontinuitet import FluidSimulation, PRESETS
 
+class Slider:
+    def __init__(self, x, y, w, min_val, max_val, start_val, label):
+        self.x = x
+        self.y = y
+        self.w = w
+
+        self.value = start_val
+
+        self.min_val = min_val
+        self.max_val = max_val
+        self.label = label
+
+        self.dragging = False
+
+    def handle_event(self, event):
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            mx, my = event.pos
+            if self.x <= mx <= self.x + self.w and self.y - 10 <= my <= self.y + 10:
+                self.dragging = True
+                self.set_from_mouse(mx) 
+        elif event.type == pygame.MOUSEBUTTONUP:
+            self.dragging = False
+        elif event.type == pygame.MOUSEMOTION and self.dragging == True:
+            mx, _ = event.pos
+            self.set_from_mouse(mx)
+    def set_from_mouse(self, mx):
+        t = (mx - self.x) / self.w
+        t = max(0.0, min(1.0, t))
+        self.value = self.min_val + t * (self.max_val - self.min_val)
+    def draw(self, screen, font):
+        pygame.draw.line(
+            screen,
+            (180,180,180),
+            (self.x, self.y),
+            (self.x + self.w, self.y),
+            3
+        )
+        t = (self.value - self.min_val) / (self.max_val - self.min_val)
+        knob_x = int(self.x + t * self.w)
+        pygame.draw.circle(screen, (240,240,240), (knob_x, self.y), 8)
+        pygame.draw.circle(screen, (40,40,40), (knob_x, self.y), 8, 2)
+        text = font.render(f"{self.label} : {self.value:.3f}", True, (255,255,255))
+        screen.blit(text, (self.x, self.y - 35))
+        
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Fast Pygame viewer for the fluid simulation.")
@@ -313,10 +356,17 @@ def main():
     )
     export_file, export_writer = open_export_csv(args.export_csv)
     profile_file, profile_writer = open_profile_csv(args.export_profile_csv)
+    
+    PANEL_WIDTH = 260
+    WINDOWS_WIDTH = args.size + PANEL_WIDTH
+    WINDOWS_HEIGHT = args.size
+
+    SIM_OFFSET_X = PANEL_WIDTH
+    SIM_OFFSET_Y = 0
 
     pygame.init()
     pygame.display.set_caption("Real-time Fluid Simulation - Pygame")
-    screen = pygame.display.set_mode((args.size, args.size))
+    screen = pygame.display.set_mode((WINDOWS_WIDTH, WINDOWS_HEIGHT))
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("consolas", 15)
     small_font = pygame.font.SysFont("consolas", 13)
@@ -362,6 +412,13 @@ def main():
     speed_narrow = 0.0
     speed_ratio = 0.0
 
+    sliders = [
+        Slider(30, 80, 190, 0.000, 0.200, simulation.viscosity,"Viscosity"),
+        Slider(30, 220, 190, 0.001, 0.050, simulation.dt, "dt"),
+        Slider(30, 290, 190, 0.100, 20.000, 2.0, "Inlet speed"),
+        Slider(30, 350, 190, 90.0, 110.0, args.damping, "Damping"),
+    ]
+
     mouse_pressed_pos = None
     mouse_timer = 0
 
@@ -402,51 +459,60 @@ def main():
                     else:
                         tema_idx = 0
                         args.theme = sve_teme[tema_idx]
-            
+
                 else:
                     key_name = pygame.key.name(event.key)
                     if key_name in PRESETS:
                         simulation.reset(PRESETS[key_name])
+            for slider in sliders:
+                slider.handle_event(event)
 
         mouse_buttons = pygame.mouse.get_pressed(num_buttons=3)
         current_mouse_pos = pygame.mouse.get_pos()
-        screen_size = screen.get_width()
+
+        sim_mouse_x = current_mouse_pos[0] - PANEL_WIDTH
+        sim_mouse_y = current_mouse_pos[1]
+
+        inside_sim = (
+            0 <= sim_mouse_x < args.size and
+            0 <= sim_mouse_y < args.size
+        )
+
+        if inside_sim:
+            cx = int(sim_mouse_x / args.size * simulation.n)
+            cy = int(sim_mouse_y / args.size * simulation.n)
+
+            cx = max(0, min(simulation.n - 1, cx))
+            cy = max(0, min(simulation.n - 1, cy))
+        else:
+            cx = None
+            cy = None
 
         
-        cx = int(current_mouse_pos[0] / (screen_size / simulation.n))
-        cy = int(current_mouse_pos[1] / (screen_size / simulation.n))
-        cx = max(0, min(simulation.n - 1, cx))
-        cy = max(0, min(simulation.n - 1, cy))
-
-        
-        if mouse_buttons[0]:
+        if inside_sim and mouse_buttons[0]:
             if mouse_pressed_pos is None:
-                
                 mouse_pressed_pos = (cx, cy)
                 mouse_timer = 0
-
             else:
-                
                 mouse_timer += 1
-    
+
         elif mouse_pressed_pos is not None and not mouse_buttons[0]:
             duration = max(1, mouse_timer)
 
-            simulation.apply_mouse_impulse(mouse_pressed_pos, (cx, cy), duration)
-            
-            
+            if inside_sim:
+                simulation.apply_mouse_impulse(mouse_pressed_pos, (cx, cy), duration)
+
             mouse_pressed_pos = None
 
         
-        if mouse_buttons[2]:
-            if 0 <= current_mouse_pos[0] < args.size and 0 <= current_mouse_pos[1] < args.size:
-                stream_strength = args.stream_strength * -1.0
-                simulation.add_vortex_at_cell(
-                    current_mouse_pos[0] / args.size * simulation.n,
-                    current_mouse_pos[1] / args.size * simulation.n,
-                    radius=args.stream_radius,
-                    strength=stream_strength,
-                )
+        if inside_sim and mouse_buttons[2]:
+            stream_strength = args.stream_strength * -1.0
+            simulation.add_vortex_at_cell(
+                sim_mouse_x / args.size * simulation.n,
+                sim_mouse_y / args.size * simulation.n,
+                radius=args.stream_radius,
+                strength=stream_strength,
+            )
         
         
         timings["events_ms"] = (time.perf_counter() - event_start) * 1000.0
@@ -461,6 +527,8 @@ def main():
 
         if mouse_buttons[2]:
             x, y = pygame.mouse.get_pos()
+            x -= PANEL_WIDTH
+
             if 0 <= x < args.size and 0 <= y < args.size:
                 stream_strength = args.stream_strength * -1.0
                 simulation.add_vortex_at_cell(
@@ -469,6 +537,7 @@ def main():
                     radius=args.stream_radius,
                     strength=stream_strength,
                 )
+        
         timings["stream_ms"] = (time.perf_counter() - stream_start) * 1000.0
 
         if not paused:
@@ -505,6 +574,12 @@ def main():
         timings["rgb_ms"] = (time.perf_counter() - rgb_start) * 1000.0
         timings["rgb_ms"] = (time.perf_counter() - rgb_start) * 1000.0
         timings["rgb_ms"] = (time.perf_counter() - rgb_start) * 1000.0
+
+        simulation.viscosity = sliders[0].value
+        simulation.dt = sliders[1].value
+        simulation.inlet_speed = sliders[2].value
+        args.damping = sliders[3].value
+        
 
         scale_start = time.perf_counter()
         cpu_rgb = cp.swapaxes(rgb, 0, 1).get() # Spuštamo sa GPU na CPU
@@ -629,8 +704,23 @@ def main():
             f"delta p    {p_delta:.2f}",
             f"frame      {timings['frame_ms']:6.2f}"      
         ]
+        
+        screen.fill((20, 20, 20))
+
+        pygame.draw.rect(
+            screen,
+            (30, 30, 35),
+            (0, 0, PANEL_WIDTH, WINDOWS_HEIGHT)
+        )
+
+        for slider in sliders:
+            slider.draw(screen, font)
+
+        # 5. Crtanje simulacije desno od panela
+        screen.blit(field_surface, (PANEL_WIDTH, 0))
+
         if show_metrics:
-            draw_text_lines(screen, font, lines, 10, 10)
+            draw_text_lines(screen, font, lines, PANEL_WIDTH + 10, 10)
             help_lines = ["space pause | r reset | 1-6 presets | hold L/R stream | esc quit"]
             draw_text_lines(screen, small_font, help_lines, 10, args.size - 32)
             timings["text_ms"] = (time.perf_counter() - text_start) * 1000.0
@@ -640,7 +730,11 @@ def main():
                             f"v3/v1 {v3_v1}",
                             f"dp {p_delta:.2f}",
                             f"Kontrole - TAB"]      
-            draw_text_lines(screen, font, lines_small, 5, 5)
+            draw_text_lines(screen, font, lines_small, PANEL_WIDTH + 5, 5)
+
+
+        # 6. Refresh ekrana
+        pygame.display.flip()
 
         keys = pygame.key.get_pressed()
         if keys[pygame.K_TAB]:
