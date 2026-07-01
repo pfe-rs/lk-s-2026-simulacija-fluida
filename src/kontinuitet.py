@@ -83,6 +83,8 @@ class FluidSimulation:
         # Reopen full inlet and outlet
         self.cell_type[y_gore_siroko:y_dole_siroko, 0] = 1
         self.cell_type[y_gore_usko:y_dole_usko, -1] = 1
+        self.inlet_speed = 10.0
+        self._build_velocity_boundary_masks()
 
         self.index_map = self.IndexMap(self.cell_type)
         self.system_matrix = self._build_sparse_system_matrix(self.index_map)
@@ -108,6 +110,19 @@ class FluidSimulation:
         self.mouse_timer = 0
 
         self.reset(preset)
+
+    def _build_velocity_boundary_masks(self):
+        self.u_fluid_face_mask = cp.zeros((self.n, self.n + 1), dtype=bool)
+        self.u_fluid_face_mask[:, 1:self.n] = (
+            (self.cell_type[:, :-1] == 1) & (self.cell_type[:, 1:] == 1)
+        )
+        self.u_inlet_mask = self.cell_type[:, 0] == 1
+        self.u_outlet_mask = self.cell_type[:, -1] == 1
+
+        self.v_fluid_face_mask = cp.zeros((self.n + 1, self.n), dtype=bool)
+        self.v_fluid_face_mask[1:self.n, :] = (
+            (self.cell_type[:-1, :] == 1) & (self.cell_type[1:, :] == 1)
+        )
 
     def Univerzalna_Advekcija(self, polje, brzina_x, brzina_y, tip_pozicije, dt=0.05, h=0.1):
         redova, kolone = polje.shape
@@ -584,11 +599,9 @@ class FluidSimulation:
             0.0
         )
 
-        brzina_uliva = -1000.0
-
         ulazni_vrat = (self.cell_type[:, 0] == 1)
-        self.velocity_x[ulazni_vrat, 0] = brzina_uliva
-        self.velocity_x[ulazni_vrat, 1] = brzina_uliva
+        self.velocity_x[ulazni_vrat, 0] = self.inlet_speed
+        self.velocity_x[ulazni_vrat, 1] = self.inlet_speed
 
         y_mask = (self.cell_type[:-1, :] != 0) & (self.cell_type[1:, :] != 0)
         
@@ -602,31 +615,16 @@ class FluidSimulation:
         )
 
     def _enforce_walls(self):
-        #self.velocity_x[:, 0] = 0.0
-        #self.velocity_x[:, -1] = 0.0
-        #self.velocity_x[0, :] = 0.0
-        #self.velocity_x[-1, :] = 0.0
-
-        #self.velocity_y[0, :] = 0.0
-        #self.velocity_y[-1, :] = 0.0
-        #self.velocity_y[:, 0] = 0.0
-        #self.velocity_y[:, -1] = 0.0
+        self.velocity_x = cp.where(self.u_fluid_face_mask, self.velocity_x, 0.0)
+        self.velocity_y = cp.where(self.v_fluid_face_mask, self.velocity_y, 0.0)
 
         ulazni_vrat = (self.cell_type[:, 0] == 1) 
-        
-
-        self.velocity_x[ulazni_vrat, 0] = 10.0
-        self.velocity_x[ulazni_vrat, 1] = 10.0
-        
-        self.velocity_y[:, 0] = 0.0
-
+        self.velocity_x[ulazni_vrat, 0] = self.inlet_speed
+        self.velocity_x[ulazni_vrat, 1] = self.inlet_speed
 
         izlazni_vrat = (self.cell_type[:, -1] == 1) 
-        
         self.velocity_x[izlazni_vrat, -1] = self.velocity_x[izlazni_vrat, -2]
         self.velocity_x[izlazni_vrat, -1] = cp.maximum(self.velocity_x[izlazni_vrat, -1], 0.0)
-        
-        self.velocity_y[:, -1] = self.velocity_y[:, -2]
 
         if self.preset == "lid_driven_cavity":
             U0 = 0.0  
