@@ -44,47 +44,45 @@ class FluidSimulation:
 
         self.cell_type = cp.ones((n, n), dtype=int)
         
+        # Everything solid
+        self.cell_type[:, :] = 0
+
+        x1 = n // 3
+        x2 = 2 * n // 3
+
+        y_gore_siroko = n // 4
+        y_dole_siroko = 3 * n // 4
+
+        y_gore_usko = int(n // 2.2)
+        y_dole_usko = int(n // 1.8)
+
+        # Left duct, including inlet thickness
+        self.cell_type[y_gore_siroko:y_dole_siroko, 0:x1] = 1
+
+        # Middle transition
+        for i in range(x1, x2 + 1):
+            t_num = i - x1
+            dx = x2 - x1
+
+            yg = y_gore_siroko + t_num * (y_gore_usko - y_gore_siroko) // dx
+            yd = y_dole_siroko + t_num * (y_dole_usko - y_dole_siroko) // dx
+
+            self.cell_type[yg:yd, i] = 1
+
+        # Right duct, including outlet
+        self.cell_type[y_gore_usko:y_dole_usko, x2:n] = 1
+
+        # Force top and bottom closed
         self.cell_type[0, :] = 0
         self.cell_type[-1, :] = 0
 
-        
-        x1 = n // 3       
-        x2 = 2 * n // 3   
+        # Force left and right closed first
+        self.cell_type[:, 0] = 0
+        self.cell_type[:, -1] = 0
 
-        
-        y_gore_siroko = n // 4       
-        y_dole_siroko = 3 * n // 4    
-        
-        y_gore_usko = int(n // 2.2)  
-        y_dole_usko = int(n // 1.8)  
-
-        self.cell_type[y_gore_siroko, :x1] = 0
-        self.cell_type[y_dole_siroko, :x1] = 0
-        
-        
-        x_indices = cp.arange(x1, x2)
-        dx = x2 - x1
-        
-        
-        y_gornja = y_gore_siroko + (x_indices - x1) * (y_gore_usko - y_gore_siroko) // dx
-        self.cell_type[y_gornja, x_indices] = 0
-        self.cell_type[y_gornja, cp.clip(x_indices + 1, 0, n - 1)] = 0 # Ojačanje
-
-        
-        y_donja = y_dole_siroko + (x_indices - x1) * (y_dole_usko - y_dole_siroko) // dx
-        self.cell_type[y_donja, x_indices] = 0
-        self.cell_type[y_donja, cp.clip(x_indices + 1, 0, n - 1)] = 0 # Ojačanje
-
-        
-        self.cell_type[y_gore_usko, x2:n] = 0
-        self.cell_type[y_dole_usko, x2:n] = 0
-
-        self.cell_type[:y_gore_siroko, 0] = 0
-        self.cell_type[y_dole_siroko:, 0] = 0
-        
-
-        self.cell_type[:y_gore_usko, -1] = 0
-        self.cell_type[y_dole_usko:, -1] = 0
+        # Reopen full inlet and outlet
+        self.cell_type[y_gore_siroko:y_dole_siroko, 0] = 1
+        self.cell_type[y_gore_usko:y_dole_usko, -1] = 1
 
         self.index_map = self.IndexMap(self.cell_type)
         self.system_matrix = self._build_sparse_system_matrix(self.index_map)
@@ -586,7 +584,7 @@ class FluidSimulation:
             0.0
         )
 
-        brzina_uliva = 10.0
+        brzina_uliva = -1000.0
 
         ulazni_vrat = (self.cell_type[:, 0] == 1)
         self.velocity_x[ulazni_vrat, 0] = brzina_uliva
