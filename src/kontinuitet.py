@@ -126,9 +126,15 @@ class FluidSimulation:
         self.velocity_x_fluid_mask[:, 1:self.n] = (
             (self.cell_type[:, :-1] == 1) & (self.cell_type[:, 1:] == 1)
         )
-        self.inlet_mask = self.cell_type[:, 0] == 1
+        self.inlet_open_mask = self.cell_type[:, 0] == 1
+        self.inlet_drive_mask = self.inlet_open_mask.copy()
+        inlet_rows = cp.where(self.inlet_open_mask)[0]
+        if inlet_rows.size > 2:
+            self.inlet_drive_mask[inlet_rows[0]] = False
+            self.inlet_drive_mask[inlet_rows[-1]] = False
+        self.inlet_lip_mask = self.inlet_open_mask & ~self.inlet_drive_mask
         self.outlet_mask = self.cell_type[:, -1] == 1
-        self.velocity_x_fluid_mask[self.inlet_mask, 0] = True
+        self.velocity_x_fluid_mask[self.inlet_open_mask, 0] = True
         self.velocity_x_fluid_mask[self.outlet_mask, -1] = True
 
         self.velocity_y_fluid_mask = cp.zeros((self.n + 1, self.n), dtype=bool)
@@ -617,7 +623,9 @@ class FluidSimulation:
             0.0
         )
 
-        ulazni_vrat = (self.cell_type[:, 0] == 1)
+        ulazni_vrat = self.inlet_drive_mask
+        self.velocity_x[self.inlet_lip_mask, 0] = 0.0
+        self.velocity_x[self.inlet_lip_mask, 1] = 0.0
         self.velocity_x[ulazni_vrat, 0] = self.inlet_speed
         self.velocity_x[ulazni_vrat, 1] = self.inlet_speed
 
@@ -636,7 +644,9 @@ class FluidSimulation:
         self.velocity_x = cp.where(self.velocity_x_fluid_mask, self.velocity_x, 0.0)
         self.velocity_y = cp.where(self.velocity_y_fluid_mask, self.velocity_y, 0.0)
 
-        ulazni_vrat = (self.cell_type[:, 0] == 1) 
+        ulazni_vrat = self.inlet_drive_mask
+        self.velocity_x[self.inlet_lip_mask, 0] = 0.0
+        self.velocity_x[self.inlet_lip_mask, 1] = 0.0
         self.velocity_x[ulazni_vrat, 0] = self.inlet_speed
         self.velocity_x[ulazni_vrat, 1] = self.inlet_speed
 
@@ -662,6 +672,18 @@ class FluidSimulation:
     def speed(self):
         u_center, v_center = self.centered_velocity()
         return cp.sqrt(u_center**2 + v_center**2)
+
+    def mean_pressure_at_column(self, column):
+        column = int(np.clip(column, 0, self.n - 1))
+        fluid_rows = self.cell_type[:, column] == 1
+        if not bool(cp.any(fluid_rows).get()):
+            return 0.0
+        return float(cp.mean(self.pressure[fluid_rows, column]).get())
+
+    def pressure_samples(self):
+        p_wide = self.mean_pressure_at_column(self.n // 6)
+        p_narrow = self.mean_pressure_at_column(self.n // 2)
+        return p_wide, p_narrow, p_wide - p_narrow
 
     def curl_field(self):
         curl = cp.zeros((self.n, self.n))
@@ -690,7 +712,9 @@ class FluidSimulation:
 
         avg_accuracy = self.total_accuracy_sum / self.accuracy_frame_count
 
-        return divergence, vorticity, curl, kinetic_energy, cfl, tacnost_L2, avg_accuracy
+        p_wide, p_narrow, p_delta = self.pressure_samples()
+
+        return divergence, vorticity, curl, kinetic_energy, cfl, tacnost_L2, avg_accuracy, p_wide, p_narrow, p_delta
 
     def curl_field(self):
     

@@ -383,7 +383,18 @@ def main():
             simulation.velocity_x *= (args.damping / 100)
             simulation.velocity_y *= (args.damping / 100)
 
-            divergencija_metrika, vorticitet_metrika, curl, kinetic_energy, cfl, tacnost_L2, avg_tacnostL2 = simulation.metrics()
+            (
+                divergencija_metrika,
+                vorticitet_metrika,
+                curl,
+                kinetic_energy,
+                cfl,
+                tacnost_L2,
+                avg_tacnostL2,
+                p_wide,
+                p_narrow,
+                p_delta,
+            ) = simulation.metrics()
 
         rgb_start = time.perf_counter()
         if view_mode == "curl":
@@ -456,6 +467,9 @@ def main():
             f"v1         {v1:.2f}",
             f"v2         {v2:.2f}",
             f"v3         {v3:.2f}",
+            f"p wide     {p_wide:.2f}",
+            f"p narrow   {p_narrow:.2f}",
+            f"delta p    {p_delta:.2f}",
             f"frame      {timings['frame_ms']:6.2f}"      
         ]
 
@@ -472,6 +486,7 @@ def main():
             lines_small = [ f"{simulation.preset} | {status} | fps {fps:5.1f}", 
                             f"L2-div {tacnost_L2:.2f}", f"L2-div-abf {avg_tacnostL2:.2f}",
                             f"v3/v1 {v3_v1}",
+                            f"dp {p_delta:.2f}",
                             f"Kontrole - TAB"]      
             draw_text_lines(screen, font, lines_small, 5, 5)
 
