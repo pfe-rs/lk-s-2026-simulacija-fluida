@@ -1,4 +1,6 @@
 import argparse
+import csv
+from pathlib import Path
 import time
 
 import numpy as np
@@ -99,7 +101,53 @@ def parse_args():
         help="Faktor prigušenja brzine fluida po frejmu (npr. 0.995 za lagano nestajanje).",
     )
 
+    parser.add_argument(
+        "--export-csv",
+        default="",
+        help="Optional CSV path for exported speed and pressure samples.",
+    )
+    parser.add_argument(
+        "--export-every",
+        type=int,
+        default=1,
+        help="Export one CSV row every N simulation frames.",
+    )
+
     return parser.parse_args()
+
+def open_export_csv(path):
+    if not path:
+        return None, None
+
+    csv_path = Path(path)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    csv_file = csv_path.open("w", newline="")
+    fieldnames = [
+        "frame",
+        "geometry",
+        "preset",
+        "time",
+        "p_wide",
+        "p_narrow",
+        "p_delta",
+        "speed_wide",
+        "speed_narrow",
+        "speed_ratio",
+        "v1",
+        "v2",
+        "v3",
+        "v3_v1",
+        "divergence",
+        "vorticity",
+        "curl",
+        "kinetic_energy",
+        "cfl",
+        "l2_div",
+        "avg_l2_div",
+    ]
+    writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+    writer.writeheader()
+    return csv_file, writer
 
 def draw_help_menu(surface, font, title_font, viewport_size):
 
@@ -237,6 +285,7 @@ def main():
         preset=args.preset,
         geometry=args.geometry,
     )
+    export_file, export_writer = open_export_csv(args.export_csv)
 
     pygame.init()
     pygame.display.set_caption("Real-time Fluid Simulation - Pygame")
@@ -272,6 +321,19 @@ def main():
         "walls_ms": 0.0,
         "total_ms": 0.0,
     }
+    divergencija_metrika = 0.0
+    vorticitet_metrika = 0.0
+    curl = 0.0
+    kinetic_energy = 0.0
+    cfl = 0.0
+    tacnost_L2 = 0.0
+    avg_tacnostL2 = 0.0
+    p_wide = 0.0
+    p_narrow = 0.0
+    p_delta = 0.0
+    speed_wide = 0.0
+    speed_narrow = 0.0
+    speed_ratio = 0.0
 
     mouse_pressed_pos = None
     mouse_timer = 0
@@ -401,6 +463,9 @@ def main():
                 p_wide,
                 p_narrow,
                 p_delta,
+                speed_wide,
+                speed_narrow,
+                speed_ratio,
             ) = simulation.metrics()
 
         rgb_start = time.perf_counter()
@@ -442,6 +507,40 @@ def main():
         v1 = simulation.velocity_x[simulation.n//2, simulation.n//6]
         v2 = simulation.velocity_x[simulation.n//2, simulation.n//2]
         v3 = simulation.velocity_x[simulation.n//2, 5 * simulation.n//6]
+        v1_value = float(cp.asnumpy(v1))
+        v2_value = float(cp.asnumpy(v2))
+        v3_value = float(cp.asnumpy(v3))
+        v3_v1 = v3_value / v1_value if abs(v1_value) > 1e-8 else 0.0
+        if (
+            not paused
+            and export_writer is not None
+            and simulation.frame % max(1, args.export_every) == 0
+        ):
+            export_writer.writerow(
+                {
+                    "frame": simulation.frame,
+                    "geometry": simulation.geometry,
+                    "preset": simulation.preset,
+                    "time": simulation.frame * simulation.dt,
+                    "p_wide": p_wide,
+                    "p_narrow": p_narrow,
+                    "p_delta": p_delta,
+                    "speed_wide": speed_wide,
+                    "speed_narrow": speed_narrow,
+                    "speed_ratio": speed_ratio,
+                    "v1": v1_value,
+                    "v2": v2_value,
+                    "v3": v3_value,
+                    "v3_v1": v3_v1,
+                    "divergence": divergencija_metrika,
+                    "vorticity": vorticitet_metrika,
+                    "curl": curl,
+                    "kinetic_energy": kinetic_energy,
+                    "cfl": cfl,
+                    "l2_div": tacnost_L2,
+                    "avg_l2_div": avg_tacnostL2,
+                }
+            )
         status = "paused" if paused else "running"
         lines = [
             f"{simulation.geometry} | {simulation.preset} | frame {simulation.frame} | {status} | fps {fps:5.1f}",
@@ -471,19 +570,17 @@ def main():
             f"quiver     {timings['quiver_ms']:6.2f}",
             f"text       {timings['text_ms']:6.2f}",
             f"flip       {timings['flip_ms']:6.2f}",
-            f"v1         {v1:.2f}",
-            f"v2         {v2:.2f}",
-            f"v3         {v3:.2f}",
+            f"v1         {v1_value:.2f}",
+            f"v2         {v2_value:.2f}",
+            f"v3         {v3_value:.2f}",
+            f"speed wide {speed_wide:.2f}",
+            f"speed nar  {speed_narrow:.2f}",
+            f"speed rat  {speed_ratio:.2f}",
             f"p wide     {p_wide:.2f}",
             f"p narrow   {p_narrow:.2f}",
             f"delta p    {p_delta:.2f}",
             f"frame      {timings['frame_ms']:6.2f}"      
         ]
-
-
-
-        v3_v1 = float(v3 / v1)
-
         if show_metrics:
             draw_text_lines(screen, font, lines, 10, 10)
             help_lines = ["space pause | r reset | 1-6 presets | hold L/R stream | esc quit"]
@@ -512,6 +609,8 @@ def main():
         if args.frames > 0 and simulation.frame >= args.frames:
             running = False
 
+    if export_file is not None:
+        export_file.close()
     pygame.quit()
 
 if __name__ == "__main__":

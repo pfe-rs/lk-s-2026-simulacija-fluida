@@ -700,6 +700,22 @@ class FluidSimulation:
         u_center, v_center = self.centered_velocity()
         return cp.sqrt(u_center**2 + v_center**2)
 
+    def mean_speed_at_column(self, column):
+        column = int(np.clip(column, 0, self.n - 1))
+        fluid_rows = self.cell_type[:, column] == 1
+        if not bool(cp.any(fluid_rows).get()):
+            return 0.0
+        return float(cp.mean(self.speed()[fluid_rows, column]).get())
+
+    def speed_samples(self):
+        speed_wide = self.mean_speed_at_column(self.wide_sample_column)
+        speed_narrow = self.mean_speed_at_column(self.narrow_sample_column)
+        if abs(speed_wide) > 1e-8:
+            speed_ratio = speed_narrow / speed_wide
+        else:
+            speed_ratio = 0.0
+        return speed_wide, speed_narrow, speed_ratio
+
     def mean_pressure_at_column(self, column):
         column = int(np.clip(column, 0, self.n - 1))
         fluid_rows = self.cell_type[:, column] == 1
@@ -740,8 +756,23 @@ class FluidSimulation:
         avg_accuracy = self.total_accuracy_sum / self.accuracy_frame_count
 
         p_wide, p_narrow, p_delta = self.pressure_samples()
+        speed_wide, speed_narrow, speed_ratio = self.speed_samples()
 
-        return divergence, vorticity, curl, kinetic_energy, cfl, tacnost_L2, avg_accuracy, p_wide, p_narrow, p_delta
+        return (
+            divergence,
+            vorticity,
+            curl,
+            kinetic_energy,
+            cfl,
+            tacnost_L2,
+            avg_accuracy,
+            p_wide,
+            p_narrow,
+            p_delta,
+            speed_wide,
+            speed_narrow,
+            speed_ratio,
+        )
 
     def curl_field(self):
     

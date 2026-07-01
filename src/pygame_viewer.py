@@ -375,7 +375,7 @@ def main():
             simulation.velocity_x *= (args.damping / 100)
             simulation.velocity_y *= (args.damping / 100)
 
-            divergencija_metrika, vorticitet_metrika, curl, kinetic_energy, cfl, tacnost_L2, avg_tacnostL2 = simulation.metrics()
+            divergencija_metrika, vorticitet_metrika, curl, kinetic_energy, cfl, tacnost_L2, avg_tacnostL2, *_ = simulation.metrics()
 
         rgb_start = time.perf_counter()
         if view_mode == "curl":
