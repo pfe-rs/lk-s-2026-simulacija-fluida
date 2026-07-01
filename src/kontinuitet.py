@@ -728,6 +728,27 @@ class FluidSimulation:
         p_narrow = self.mean_pressure_at_column(self.narrow_sample_column)
         return p_wide, p_narrow, p_wide - p_narrow
 
+    def profile_samples(self):
+        u_center, _ = self.centered_velocity()
+        speed = self.speed()
+        x = np.arange(self.n)
+        u_centerline = cp.asnumpy(u_center[self.n // 2, :])
+        pressure_mean = np.zeros(self.n)
+        speed_mean = np.zeros(self.n)
+
+        for column in range(self.n):
+            fluid_rows = self.cell_type[:, column] == 1
+            if bool(cp.any(fluid_rows).get()):
+                pressure_mean[column] = float(cp.mean(self.pressure[fluid_rows, column]).get())
+                speed_mean[column] = float(cp.mean(speed[fluid_rows, column]).get())
+
+        return {
+            "x": x,
+            "velocity_x": u_centerline,
+            "pressure": pressure_mean,
+            "speed": speed_mean,
+        }
+
     def curl_field(self):
         curl = cp.zeros((self.n, self.n))
         curl[: self.n - 1, : self.n - 1] = (

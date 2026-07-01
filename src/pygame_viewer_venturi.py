@@ -107,6 +107,11 @@ def parse_args():
         help="Optional CSV path for exported speed and pressure samples.",
     )
     parser.add_argument(
+        "--export-profile-csv",
+        default="",
+        help="Optional CSV path for per-frame x profiles of velocity, speed, and pressure.",
+    )
+    parser.add_argument(
         "--export-every",
         type=int,
         default=1,
@@ -144,6 +149,27 @@ def open_export_csv(path):
         "cfl",
         "l2_div",
         "avg_l2_div",
+    ]
+    writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+    writer.writeheader()
+    return csv_file, writer
+
+def open_profile_csv(path):
+    if not path:
+        return None, None
+
+    csv_path = Path(path)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    csv_file = csv_path.open("w", newline="")
+    fieldnames = [
+        "frame",
+        "geometry",
+        "preset",
+        "time",
+        "x",
+        "velocity_x",
+        "speed",
+        "pressure",
     ]
     writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
     writer.writeheader()
@@ -286,6 +312,7 @@ def main():
         geometry=args.geometry,
     )
     export_file, export_writer = open_export_csv(args.export_csv)
+    profile_file, profile_writer = open_profile_csv(args.export_profile_csv)
 
     pygame.init()
     pygame.display.set_caption("Real-time Fluid Simulation - Pygame")
@@ -513,34 +540,55 @@ def main():
         v3_v1 = v3_value / v1_value if abs(v1_value) > 1e-8 else 0.0
         if (
             not paused
-            and export_writer is not None
+            and (export_writer is not None or profile_writer is not None)
             and simulation.frame % max(1, args.export_every) == 0
         ):
-            export_writer.writerow(
-                {
-                    "frame": simulation.frame,
-                    "geometry": simulation.geometry,
-                    "preset": simulation.preset,
-                    "time": simulation.frame * simulation.dt,
-                    "p_wide": p_wide,
-                    "p_narrow": p_narrow,
-                    "p_delta": p_delta,
-                    "speed_wide": speed_wide,
-                    "speed_narrow": speed_narrow,
-                    "speed_ratio": speed_ratio,
-                    "v1": v1_value,
-                    "v2": v2_value,
-                    "v3": v3_value,
-                    "v3_v1": v3_v1,
-                    "divergence": divergencija_metrika,
-                    "vorticity": vorticitet_metrika,
-                    "curl": curl,
-                    "kinetic_energy": kinetic_energy,
-                    "cfl": cfl,
-                    "l2_div": tacnost_L2,
-                    "avg_l2_div": avg_tacnostL2,
-                }
-            )
+            if export_writer is not None:
+                export_writer.writerow(
+                    {
+                        "frame": simulation.frame,
+                        "geometry": simulation.geometry,
+                        "preset": simulation.preset,
+                        "time": simulation.frame * simulation.dt,
+                        "p_wide": p_wide,
+                        "p_narrow": p_narrow,
+                        "p_delta": p_delta,
+                        "speed_wide": speed_wide,
+                        "speed_narrow": speed_narrow,
+                        "speed_ratio": speed_ratio,
+                        "v1": v1_value,
+                        "v2": v2_value,
+                        "v3": v3_value,
+                        "v3_v1": v3_v1,
+                        "divergence": divergencija_metrika,
+                        "vorticity": vorticitet_metrika,
+                        "curl": curl,
+                        "kinetic_energy": kinetic_energy,
+                        "cfl": cfl,
+                        "l2_div": tacnost_L2,
+                        "avg_l2_div": avg_tacnostL2,
+                    }
+                )
+            if profile_writer is not None:
+                profile = simulation.profile_samples()
+                for x, velocity_x, speed, pressure in zip(
+                    profile["x"],
+                    profile["velocity_x"],
+                    profile["speed"],
+                    profile["pressure"],
+                ):
+                    profile_writer.writerow(
+                        {
+                            "frame": simulation.frame,
+                            "geometry": simulation.geometry,
+                            "preset": simulation.preset,
+                            "time": simulation.frame * simulation.dt,
+                            "x": int(x),
+                            "velocity_x": float(velocity_x),
+                            "speed": float(speed),
+                            "pressure": float(pressure),
+                        }
+                    )
         status = "paused" if paused else "running"
         lines = [
             f"{simulation.geometry} | {simulation.preset} | frame {simulation.frame} | {status} | fps {fps:5.1f}",
@@ -611,6 +659,8 @@ def main():
 
     if export_file is not None:
         export_file.close()
+    if profile_file is not None:
+        profile_file.close()
     pygame.quit()
 
 if __name__ == "__main__":
