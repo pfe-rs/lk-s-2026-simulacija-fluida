@@ -106,10 +106,14 @@ class FluidSimulation:
         x1 = self.n // 3
         x2 = 2 * self.n // 3
 
-        y_top_wide = self.n // 4
-        y_bottom_wide = 3 * self.n // 4
-        y_top_narrow = int(self.n // 2.2)
-        y_bottom_narrow = int(self.n // 1.8)
+        wide_half_width = self.n // 4
+        narrow_half_width = max(2, self.n // 16)
+        center = self.n // 2
+
+        y_top_wide = center - wide_half_width
+        y_bottom_wide = self.n - y_top_wide
+        y_top_narrow = center - narrow_half_width
+        y_bottom_narrow = self.n - y_top_narrow
 
         self.cell_type[y_top_wide:y_bottom_wide, :x1] = 1
         self.cell_type[y_top_narrow:y_bottom_narrow, x2:] = 1
@@ -117,8 +121,8 @@ class FluidSimulation:
         dx = max(1, x2 - x1)
         for x in range(x1, x2 + 1):
             t = x - x1
-            y_top = y_top_wide + t * (y_top_narrow - y_top_wide) // dx
-            y_bottom = y_bottom_wide + t * (y_bottom_narrow - y_bottom_wide) // dx
+            y_top = y_top_wide + (t * (y_top_narrow - y_top_wide) + dx // 2) // dx
+            y_bottom = self.n - y_top
             self.cell_type[y_top:y_bottom, x] = 1
 
     def _build_velocity_boundary_masks(self):
