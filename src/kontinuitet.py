@@ -79,7 +79,7 @@ class FluidSimulation:
         self.cell_type[:y_gore_usko, -1] = 0
         self.cell_type[y_dole_usko:, -1] = 0
 
-        self.inlet_speed = 10.0
+        self.inlet_speed = 100.0
         self.cell_type = cp.zeros((n, n), dtype=int)
         self._carve_venturi_duct()
         self._build_velocity_boundary_masks()
