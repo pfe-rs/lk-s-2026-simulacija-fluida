@@ -5,7 +5,7 @@ import numpy as np
 import cupy as cp
 import pygame
 
-from kontinuitet import FluidSimulation, PRESETS
+from realtime_simulation import FluidSimulation, PRESETS
 
 
 def parse_args():
